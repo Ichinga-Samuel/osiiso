@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "async-queue-manager"
+version = "1.0.0"
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+keywords = ["asynchronous", "async task queue", "concurrency", "asyncio"]
+
+dependencies = []
+
+authors = [{name = "Ichinga Samuel", email = "ichingasamuel@gmail.com"}]
+
+description = "Asynchronous Task Queue"
+
+[project.urls]
+"Homepage" = "https://github.com/Ichinga-Samuel/taskqueue"
+"Bug Tracker" = "https://github.com/Ichinga-Samuel/taskqueue/issues"
