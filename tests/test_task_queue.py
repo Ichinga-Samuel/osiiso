@@ -20,7 +20,7 @@ async def test_task_queue(data):
     tq = TaskQueue()
     assert tq.mode == 'finite'
     assert tq.workers == 10
-    assert tq.timeout is None
+    assert tq.timeout is 0
     assert tq.stop is False
     await tq.add_workers(no_of_workers=10)
     assert len(tq.worker_tasks) == 10
