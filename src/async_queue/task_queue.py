@@ -120,16 +120,18 @@ class TaskQueue:
         wr = range(no_of_workers)
         [self.worker_tasks.setdefault(wi:=ri(), ct(wi)) for _ in wr]
 
-    async def run(self, timeout: int = 0):
+    async def run(self, timeout: int = None):
         """Run the queue until all tasks are completed or the timeout is reached.
 
         Args:
             timeout (int): The maximum time to wait for the queue to complete. Default is 0.
+            This timeout overrides the timeout attribute of the queue instance.
             The queue stops when the timeout is reached, and the remaining tasks are handled based on the
             `on_exit` attribute. If the timeout is 0, the queue will run until all tasks are completed or the queue
             is stopped.
         """
         try:
+            timeout = timeout or self.timeout
             self.set_timer(timeout=timeout)
             self.running_time = time.perf_counter()
             await self.add_workers(no_of_workers=self.workers)
