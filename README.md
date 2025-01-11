@@ -54,14 +54,12 @@ async def main():
         queue.add(item=task, priority=i)
 
     # Run the queue
-    await queue.run(timeout=10)
+    await queue.run(queue_timeout=10)
 
 # Run the program
 asyncio.run(main())
 ```
-
 ---
-
 ## Project Structure
 
 - **`queue_item.py`**: Implements the `QueueItem` class.

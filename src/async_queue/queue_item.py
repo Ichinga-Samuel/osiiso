@@ -32,6 +32,9 @@ class QueueItem:
                 return await self.task_item(*self.args, **self.kwargs)
             else:
                 return await asyncio.to_thread(self.task_item, *self.args, **self.kwargs)
+        except asyncio.CancelledError:
+            logger.debug("Task %s with args %s and %s was cancelled",
+                           self.task_item.__name__, self.args, self.kwargs)
         except Exception as err:
             logger.error("Error %s occurred in %s with args %s and %s",
                          err, self.task_item.__name__, self.args, self.kwargs)

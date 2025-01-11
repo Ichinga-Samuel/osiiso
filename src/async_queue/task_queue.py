@@ -13,19 +13,20 @@ logger = getLogger(__name__)
 class TaskQueue:
     queue_task: asyncio.Task
     start_time: float
-    running_time: float
 
-    def __init__(self, *, size: int = 0, workers: int = 10, timeout: int = 0, queue: asyncio.Queue = None,
-                 on_exit: Literal['cancel', 'complete_priority'] = 'complete_priority',
+    def __init__(self, *, size: int = 0, workers: int = 10, queue: asyncio.Queue = None, queue_timeout: int = 0,
+                 on_exit: Literal['cancel', 'complete_priority'] = 'complete_priority', absolute_timeout: int = 0,
                  mode: Literal['finite', 'infinite'] = 'finite', worker_timeout: int = 1):
         self.queue = queue or asyncio.PriorityQueue(maxsize=size)
         self.workers = workers
         self.worker_tasks = {}
-        self.timeout = timeout
+        self.queue_timeout = queue_timeout
+        self.absolute_timeout = absolute_timeout
         self.stop = False
         self.on_exit = on_exit
         self.mode = mode
         self.worker_timeout = worker_timeout
+        self.queue_task_cancelled = False
         signal(SIGINT, self.sigint_handle)
 
     def add(self, *, item: QueueItem, priority=3, must_complete=False):
@@ -50,16 +51,13 @@ class TaskQueue:
         """Worker function to run tasks in the queue."""
         while True:
             try:
+                if self.queue_task_cancelled or not self.check_timeout():
+                    self.remove_worker(wid)
+                    break
+
                 if self.mode == 'infinite' and self.queue.qsize() <= 1:
                     dummy = QueueItem(self.dummy_task)
                     self.add(item=dummy)
-
-                if self.timeout and (time.perf_counter() - self.start_time) > self.timeout:
-                    if self.on_exit == 'cancel':
-                        self.cancel()
-                    else:
-                        self.stop = True
-                        self.set_timer(timeout=0)
 
                 if isinstance(self.queue, asyncio.PriorityQueue):
                     _, item = self.queue.get_nowait()
@@ -87,7 +85,6 @@ class TaskQueue:
                     break
 
             except asyncio.CancelledError:
-                self.remove_worker(wid)
                 break
 
             except Exception as err:
@@ -95,15 +92,40 @@ class TaskQueue:
                 self.remove_worker(wid)
                 break
 
-    def set_timer(self, *, timeout: int = 0):
-        self.start_time = time.perf_counter()
-        self.timeout = timeout
+    def start_timer(self, *, queue_timeout: int = None, absolute_timeout: int = None, start=False):
+        self.queue_timeout = queue_timeout or self.queue_timeout
+        self.absolute_timeout = absolute_timeout or self.absolute_timeout
+        if start:
+            self.start_time = time.perf_counter()
+
+    def check_timeout(self):
+        if self.queue_timeout and (time.perf_counter() - self.start_time) > self.queue_timeout:
+            if self.on_exit == 'cancel':
+                self.stop = True
+                self.cancel()
+                return False
+            else:
+                self.stop = True
+                self.queue_timeout = 0
+                return True
+        if self.absolute_timeout and (time.perf_counter() - self.start_time) > self.absolute_timeout:
+            self.stop = True
+            self.cancel()
+            return False
+        return True
 
     async def dummy_task(self):
         await asyncio.sleep(self.worker_timeout)
 
     def remove_worker(self, wid: int):
-        self.worker_tasks.pop(wid, None)
+        try:
+            task = self.worker_tasks.pop(wid, None)
+            if task is not None:
+                task.cancel()
+        except Exception as err:
+            logger.debug("%s: Error occurred in removing worker %d", err, wid)
+        except asyncio.CancelledError as _:
+            ...
 
     async def add_workers(self, no_of_workers: int = None):
         """Create workers for running queue tasks."""
@@ -120,46 +142,53 @@ class TaskQueue:
         wr = range(no_of_workers)
         [self.worker_tasks.setdefault(wi:=ri(), ct(wi)) for _ in wr]
 
-    async def run(self, timeout: int = None):
+    async def run(self, queue_timeout: int = None, absolute_timeout: int = None):
         """Run the queue until all tasks are completed or the timeout is reached.
 
         Args:
-            timeout (int): The maximum time to wait for the queue to complete. Default is 0.
+            queue_timeout (int): The maximum time to wait for the queue to complete. Default is 0.
+            absolute_timeout (int): The maximum time to run the queue.
             This timeout overrides the timeout attribute of the queue instance.
             The queue stops when the timeout is reached, and the remaining tasks are handled based on the
             `on_exit` attribute. If the timeout is 0, the queue will run until all tasks are completed or the queue
             is stopped.
         """
         try:
-            timeout = timeout or self.timeout
-            self.set_timer(timeout=timeout)
-            self.running_time = time.perf_counter()
+            self.start_timer(queue_timeout=queue_timeout, absolute_timeout=absolute_timeout, start=True)
             await self.add_workers(no_of_workers=self.workers)
             self.queue_task = asyncio.create_task(self.queue.join())
             await self.queue_task
 
+        except asyncio.TimeoutError:
+            logger.warning("Timeout occurred after %d seconds, %d tasks remaining",
+                           time.perf_counter() - self.start_time, self.queue.qsize())
+
         except asyncio.CancelledError:
             logger.warning("Task Queue Cancelled after %d seconds, %d tasks remaining",
-                           time.perf_counter() - self.running_time, self.queue.qsize())
-
+                           time.perf_counter() - self.start_time, self.queue.qsize())
         except Exception as err:
-            logger.warning("An error occurred after %d seconds, %d tasks remaining",
-                           time.perf_counter() - self.running_time, self.queue.qsize())
-            logger.warning("%s: An error occurred in TaskQueue ...exiting.", err)
-
+            logger.warning("%s occurred after %d seconds, %d tasks remaining",
+                           err, time.perf_counter() - self.start_time, self.queue.qsize())
         finally:
-            logger.warning("Tasks completed after %d seconds, %d tasks remaining",
-                           time.perf_counter() - self.running_time, self.queue.qsize())
+            logger.info("Tasks completed after %d seconds, %d tasks remaining",
+                           time.perf_counter() - self.start_time, self.queue.qsize())
 
+    def cancel_all_workers(self):
+        try:
+            wids = list(self.worker_tasks.keys())
+            [self.remove_worker(wid) for wid in wids]
+        except Exception as err:
+            logger.error("%s: Error occurred in cancelling workers", err)
 
     def cancel(self):
         try:
             self.queue_task.cancel()
-            self.worker_tasks.clear()
-        except asyncio.CancelledError:
+            self.queue_task_cancelled = True
+            self.cancel_all_workers()
+        except asyncio.CancelledError as _:
             ...
         except Exception as err:
-            logger.error("%s: occurred in canceling all tasks", err)
+            logger.error("%s: Error occurred in cancelling queue", err)
 
     def sigint_handle(self, sig, frame):
         if self.stop is False:
@@ -168,25 +197,29 @@ class TaskQueue:
             self.cancel()
 
 
-TaskQueue.__doc__ = """TaskQueue is a class that allows you to queue tasks and run them concurrently with a specified number of workers.
+TaskQueue.__doc__ = """
+TaskQueue is a class that allows you to queue tasks and run them concurrently with a
+specified number of workers.
 
-    Attributes:
-        - `workers` (int): The number of workers to run concurrently. Default is 10.
+Attributes:
+- `workers` (int): The number of workers to run concurrently. Default is 10.
 
-        - `timeout` (int): The maximum time to wait for the queue to complete. Default is None. If timeout is provided
-            the queue is joined using `asyncio.wait_for` with the timeout.
+- `absolute_timeout` (int): The maximum time to wait for the queue to complete. Default is None.
 
-        - `queue` (asyncio.Queue): The queue to store the tasks. Default is `asyncio.PriorityQueue` with no size limit.
+- `queue_timeout` (int): The maximum time to run the queue, after queue_timeout, new tasks are not added
+   but the queue might be allowed to run until completion. Default is None.
+    
+- `queue` (asyncio.Queue): The queue to store the tasks. Default is `asyncio.PriorityQueue` with no size limit.
 
-        - `on_exit` (Literal["cancel", "complete_priority"]): The action to take when the queue is stopped.
+- `on_exit` (Literal["cancel", "complete_priority"]): The action to take when the queue is stopped.
 
-        - `mode` (Literal["finite", "infinite"]): The mode of the queue. If `finite` the queue will stop when all tasks
-            are completed. If `infinite` the queue will continue to run until stopped.
+- `mode` (Literal["finite", "infinite"]): The mode of the queue. If `finite` the queue will stop when all tasks
+    are completed. If `infinite` the queue will continue to run until stopped.
 
-        - `worker_timeout` (int): The time to wait for a task to be added to the queue before stopping the worker or
-            adding a dummy sleep task to the queue.
+- `worker_timeout` (int): The time to wait for a task to be added to the queue before stopping the worker or
+    adding a dummy sleep task to the queue.
 
-        - `stop` (bool): A flag to stop the queue instance.
+- `stop` (bool): A flag to stop the queue instance.
 
-        - `worker_task` (dict[int: asyncio.Task]): A dict of the worker tasks running concurrently,
+- `worker_task` (dict[int: asyncio.Task]): A dict of the worker tasks running concurrently,
 """
