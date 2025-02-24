@@ -97,24 +97,24 @@ class TaskQueue:
         if start:
             self.start_time = time.perf_counter()
         if self.absolute_timeout:
-            print(self.loop.time(), self.absolute_timeout)
             self.task_timeout = self.loop.time() + self.absolute_timeout
 
     def check_timeout(self):
+        res = True
         if self.queue_timeout and (time.perf_counter() - self.start_time) > self.queue_timeout:
             if self.on_exit == 'cancel':
                 self.stop = True
                 self.cancel()
-                return False
+                res = False
             else:
                 self.stop = True
                 self.queue_timeout = None
-                return True
+                res = True
         if self.absolute_timeout and (time.perf_counter() - self.start_time) > self.absolute_timeout:
             self.stop = True
             self.cancel()
-            return False
-        return True
+            res = False
+        return res
 
     async def dummy_task(self):
         await asyncio.sleep(self.worker_timeout)
@@ -124,7 +124,6 @@ class TaskQueue:
             task = self.worker_tasks.pop(wid, None)
             if task is not None:
                 task.cancel()
-
         except asyncio.CancelledError as _:
             ...
 
@@ -165,7 +164,6 @@ class TaskQueue:
             self.start_timer(queue_timeout=queue_timeout, absolute_timeout=absolute_timeout, start=True)
             self.queue_task = asyncio.create_task(self.queue.join())
             await self.queue_task
-
         except asyncio.TimeoutError:
             logger.warning("Timeout occurred after %d seconds, %d tasks remaining",
                            time.perf_counter() - self.start_time, self.queue.qsize())
@@ -198,13 +196,8 @@ class TaskQueue:
             logger.error("%s: Error occurred in cancelling queue", err)
 
     def sigint_handle(self, sig, frame):
-        print('Canceling all tasks')
-        if self.stop is False:
-            self.stop = True
-            if self.on_exit == "cancel":
-                self.cancel()
-        else:
-            self.cancel()
+        logger.info("Canceling all tasks")
+        self.cancel()
 
 
 TaskQueue.__doc__ = """
@@ -226,8 +219,18 @@ Attributes:
 - `mode` (Literal["finite", "infinite"]): The mode of the queue. If `finite` the queue will stop when all tasks
     are completed. If `infinite` the queue will continue to run until stopped.
 
-- `worker_timeout` (int): The time to wait for a task to be added to the queue before stopping the worker or
+- `worker_timeout` (float): The time to wait for a task to be added to the queue before stopping the worker or
     adding a dummy sleep task to the queue.
+
+- `absolute_timeout` (float): The absolute length of time the queue will run. If specified the queue will stop running
+    No matter the number of pending tasks remaining.
+    
+- `queue_timeout` (float): If specified the queue will stop accepting tasks at this point, but will try and complete pending tasks.
+
+- `task_timeout` (float): If absolute_timeout is specified, task_timeout out is calculated as the the time each task in
+ the queue will stop executing using asyncio.timeout_at
+ 
+ - `queue_task_cancelled` (bool): A boolean flag to indicate if the main queue task is still running
 
 - `stop` (bool): A flag to stop the queue instance.
 

@@ -19,6 +19,8 @@ class QueueItem:
             - `must_complete` (bool): A flag to indicate if the task must complete before the queue stops. Default is False.
 
             - `time` (int): The time the task was added to the queue.
+
+            - `timeout` (int): An optional timeout for the task
     """
     def __init__(self, task_item: Callable | Coroutine, *args, **kwargs):
         self.task_item = task_item

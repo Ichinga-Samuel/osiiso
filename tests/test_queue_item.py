@@ -5,15 +5,10 @@ from async_queue import QueueItem
 
 
 def task_one(a, b, c=3):
-    print("Task one")
-    print(a, b, c)
-    print("Task one done")
     return a + b + c
 
 
 async def task_two(e, f=6):
-    print("Task two")
-    print("Task two done")
     return e + f
 
 
