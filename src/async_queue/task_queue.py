@@ -13,7 +13,7 @@ logger = getLogger(__name__)
 class TaskQueue:
     queue_task: asyncio.Task
     start_time: float
-    loop: asyncio.AbstractEventLoop
+    _loop: asyncio.AbstractEventLoop
 
     def __init__(self, *, size: int = 0, workers: int = 10, queue: asyncio.Queue = None, queue_timeout: int = None,
                  on_exit: Literal['cancel', 'complete_priority'] = 'complete_priority', absolute_timeout: int = None,
@@ -97,7 +97,7 @@ class TaskQueue:
         if start:
             self.start_time = time.perf_counter()
         if self.absolute_timeout:
-            self.task_timeout = self.loop.time() + self.absolute_timeout
+            self.task_timeout = self._loop.time() + self.absolute_timeout
 
     def check_timeout(self):
         res = True
@@ -159,7 +159,7 @@ class TaskQueue:
             is stopped.
         """
         try:
-            self.loop = asyncio.get_running_loop()
+            self._loop = asyncio.get_running_loop()
             await self.add_workers(no_of_workers=self.workers)
             self.start_timer(queue_timeout=queue_timeout, absolute_timeout=absolute_timeout, start=True)
             self.queue_task = asyncio.create_task(self.queue.join())
@@ -196,7 +196,7 @@ class TaskQueue:
             logger.error("%s: Error occurred in cancelling queue", err)
 
     def sigint_handle(self, sig, frame):
-        logger.info("Canceling all tasks")
+        logger.warning("Canceling all tasks")
         self.cancel()
 
 
@@ -235,4 +235,6 @@ Attributes:
 - `stop` (bool): A flag to stop the queue instance.
 
 - `worker_task` (dict[int: asyncio.Task]): A dict of the worker tasks running concurrently,
+
+- `loop` (asyncio.AbstractEventLoop): The current loop
 """

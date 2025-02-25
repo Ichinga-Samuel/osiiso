@@ -2,7 +2,7 @@
 
 ## Overview
 
-AsyncQueue is a Python library designed to manage and execute tasks concurrently using asyncio. 
+`async-queue-manager` is a Python library designed to manage and execute tasks concurrently using asyncio. 
 It supports task prioritization, robust error handling, and efficient queue management for both finite 
 and infinite task processing modes.
 
