@@ -236,5 +236,5 @@ Attributes:
 
 - `worker_task` (dict[int: asyncio.Task]): A dict of the worker tasks running concurrently,
 
-- `loop` (asyncio.AbstractEventLoop): The current loop
+- `_loop` (asyncio.AbstractEventLoop): The current loop
 """

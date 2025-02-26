@@ -13,9 +13,12 @@ and infinite task processing modes.
 - **QueueItem**:
   - Represents individual tasks with arguments and prioritization support.
   - Supports both synchronous and asynchronous task execution.
+  - Optional timeout argument
 
 - **TaskQueue**:
   - Manages tasks with configurable workers and prioritization.
+  - Can take different type of asyncio queues
+  - Run for a specific number of seconds
   - Modes:
     - `finite`: Process tasks and stop.
     - `infinite`: Continuously process tasks until stopped.
@@ -79,4 +82,9 @@ Contributions are welcome!
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-```
+
+---
+
+## Documentation
+
+See the [documentation](./docs) for more details.

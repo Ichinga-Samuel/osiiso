@@ -43,6 +43,7 @@ class QueueItem:
         return self.time <= other.time
 
     async def run(self, timeout: float = None):
+        """Run the task asynchronously"""
         start = time.perf_counter()
         try:
             async with asyncio.timeout_at(timeout or self.timeout):

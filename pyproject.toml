@@ -13,7 +13,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-keywords = ["asynchronous", "async task queue", "concurrency", "asyncio"]
+keywords = ["queue", "asynchronous", "concurrency", "asyncio"]
 
 dependencies = []
 
