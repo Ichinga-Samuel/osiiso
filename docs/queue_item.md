@@ -2,7 +2,7 @@
 
 ## Table of Contents
 - [QueueItem](#queueitem.queueitem)
-- [run](#queueitem.run)
+- [__call__](#queueitem.__call__)
 
 
 ### QueueItem
@@ -23,9 +23,9 @@ A class to represent a task item in the queue
 | `timeout`       | `int`                   | An optional timeout for the task                                     | `None`  |
 
 
-<a id="queueitem.run"></a>
+<a id="queueitem.__call__"></a>
 ```python
-async def run()
+async def __call__()
 ```
 Run the task asynchronously, non-async coroutines are run with `asyncio.to_thread`.
 Tasks are run with a timeout if specified.

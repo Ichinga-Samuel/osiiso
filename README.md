@@ -34,8 +34,6 @@ Ensure you have Python 3.10+ installed.
 pip install async-queue-manager  
 ```
 
-## Usage
-
 ### Example
 
 ```python

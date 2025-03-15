@@ -31,4 +31,4 @@ async def test_queue_item():
     queue.put_nowait((0, queue_item))
     _, item = queue.get_nowait()
     assert item == queue_item
-    assert await item.run() == 7
+    assert await item() == 7
