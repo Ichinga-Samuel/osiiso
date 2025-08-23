@@ -1,20 +1,9 @@
-<<<<<<< HEAD
-[project]
-name = "task-queue"
-version = "0.1.0"
-description = "Add your description here"
-requires-python = ">=3.13"
-dependencies = []
-=======
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "async-queue-manager"
-version = "4.0.0"
+version = "0.0.1"
+requires-python = ">=3.13"
 readme = "README.md"
-requires-python = ">=3.10"
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -23,13 +12,20 @@ classifiers = [
 
 keywords = ["queue", "asynchronous", "concurrency", "asyncio"]
 
-dependencies = []
+description = "Asynchronous Task Queue, For managing and executing tasks concurrently using asyncio."
 
 authors = [{name = "Ichinga Samuel", email = "ichingasamuel@gmail.com"}]
-
-description = "Asynchronous Task Queue"
 
 [project.urls]
 "Homepage" = "https://github.com/Ichinga-Samuel/taskqueue"
 "Bug Tracker" = "https://github.com/Ichinga-Samuel/taskqueue/issues"
->>>>>>> origin/master
+
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "coverage>=7.10.5",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "ruff>=0.12.10",
+]
