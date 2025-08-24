@@ -1,5 +1,7 @@
 name: Push To Remote
-on: [push]
+on:
+  push:
+    branches: [dev]
 
 jobs:
   build:
@@ -12,19 +14,19 @@ jobs:
       - name: Checkout repository code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip setuptools wheel
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
 
       - name: install local version
-        run: pip install -e .
-
-      - name: install pytest
-        run: pip install pytest
+        run: uv pip install -e .
 
       - name: run pytest
-        run: pytest tests
+        run:  uv run coverage run -m pytest tests

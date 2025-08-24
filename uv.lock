@@ -4,11 +4,8 @@ requires-python = ">=3.13"
 
 [[package]]
 name = "async-queue-manager"
-version = "0.0.1"
+version = "0.0.1b0"
 source = { virtual = "." }
-dependencies = [
-    { name = "ruff" },
-]
 
 [package.dev-dependencies]
 dev = [
@@ -19,7 +16,6 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ruff", specifier = ">=0.12.10" }]
 
 [package.metadata.requires-dev]
 dev = [
