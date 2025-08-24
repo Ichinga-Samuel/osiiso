@@ -1,6 +1,6 @@
 # Asynchronous Task Queue Manager
 
-[![PyPI version](https://badge.fury.io/py/async-queue-manager.svg)](https://badge.fury.io/py/async-queue-manager)
+![PyPI](https://img.shields.io/pypi/v/async-queue-manager)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 An efficient and robust asynchronous task queue for Python, built on top of `asyncio`. It's designed for handling concurrent tasks with support for prioritization, dynamic worker scaling, and graceful shutdowns.

@@ -1,6 +1,6 @@
 [project]
 name = "async-queue-manager"
-version = "0.0.1b"
+version = "0.1.0"
 requires-python = ">=3.13"
 readme = "README.md"
 

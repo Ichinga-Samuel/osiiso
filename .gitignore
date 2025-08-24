@@ -48,5 +48,6 @@ htmlcov/
 .pytest_cache
 nosetests.xml
 coverage.xml
+pytest.ini
 *,cover
 .hypothesis/
