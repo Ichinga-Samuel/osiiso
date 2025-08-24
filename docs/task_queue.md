@@ -6,6 +6,7 @@
 - [worker](#taskqueue.worker)
 - [check_timeout](#taskqueue.check_timeout)
 - [dummy_task](#taskqueue.dummy_task)
+- [add_dummy_task](#taskqueue.add_dummy_task)
 - [add_worker](#taskqueue.add_workers)
 - [add_task](#taskqueue.add_task)
 - [run](#taskqueue.run)
@@ -24,7 +25,7 @@ specified number of workers.
 #### Attributes:
 | Name              | Type                                   | Description                                                                                                                                      | Default                                    |
 |-------------------|----------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------|
-| `workers`         | int                                    | The number of workers to run concurrently.                                                                                                       | 10                                         |
+| `max_workers`     | int                                    | The maximum number of workers to run concurrently.                                                                                               | None                                       |
 | `queue_timeout`   | int                                    | The maximum time to run the queue, after queue_timeout, new tasks are not added but the queue might be allowed to run until completion.          | None                                       |
 | `queue`           | asyncio.Queue                          | The queue to store the tasks.                                                                                                                    | `asyncio.PriorityQueue` with no size limit |
 | `on_exit`         | Literal["cancel", "complete_priority"] | The action to take when the queue is stopped.                                                                                                    | complete_priority                          |
@@ -95,6 +96,12 @@ async def dummy_task():
 ```
 A dummy task for worker to execute when queue is empty in infinite mode.
 
+<a id="taskqueue.add_dummy_task"></a>
+### add_dummy_task
+```python
+def add_dummy_task()
+```
+Add a dummy task to the queue in `infinite` mode
 
 <a id="taskqueue.remove_worker"></a>
 ### remove_worker
