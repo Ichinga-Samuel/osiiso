@@ -1,29 +1,75 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "async-queue-manager"
-version = "0.1.1"
-requires-python = ">=3.13"
+version = "0.2.0"
+description = "A small, production-ready asyncio task queue with priorities, retries, results, and graceful shutdown."
 readme = "README.md"
-
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-]
-
-keywords = ["queue", "asynchronous", "concurrency", "asyncio"]
-
-description = "Asynchronous Task Queue, For managing and executing tasks concurrently using asyncio."
-
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "Ichinga Samuel", email = "ichingasamuel@gmail.com"}]
+keywords = ["asyncio", "concurrency", "priority-queue", "queue", "task-queue"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+dependencies = []
 
-[project.urls]
-"Homepage" = "https://github.com/Ichinga-Samuel/taskqueue"
-"Bug Tracker" = "https://github.com/Ichinga-Samuel/taskqueue/issues"
-
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
-    "coverage>=7.10.5",
+    "build>=1.2.2",
+    "coverage[toml]>=7.10.5",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "ruff>=0.12.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Ichinga-Samuel/taskqueue"
+Repository = "https://github.com/Ichinga-Samuel/taskqueue"
+Issues = "https://github.com/Ichinga-Samuel/taskqueue/issues"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+async_queue = ["py.typed"]
+async_queue_manager = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["async_queue", "async_queue_manager"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]

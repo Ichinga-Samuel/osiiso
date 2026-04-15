@@ -1,189 +1,230 @@
-# Asynchronous Task Queue Manager
+# Async Queue Manager
 
-![PyPI](https://img.shields.io/pypi/v/async-queue-manager)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+`async-queue-manager` provides both asyncio and thread-based task queues for real applications. It keeps the API simple, but adds the pieces most teams need before using a queue in production: priorities, retries, per-task timeouts, task handles, results, graceful shutdown, and continuous worker mode.
 
-An efficient and robust asynchronous task queue for Python, built on top of `asyncio`. It's designed for handling concurrent tasks with support for prioritization, dynamic worker scaling, and graceful shutdowns.
+## Highlights
 
-## Key Features
-
--   **Asynchronous First:** Built from the ground up using Python's modern `asyncio` library for high-performance I/O-bound tasks.
--   **Priority Queues:** Supports task prioritization out of the box. Lower priority numbers are processed first.
--   **Dynamic Worker Management:** Automatically scales worker tasks based on queue size to efficiently process jobs.
--   **Sync & Async Task Support:** Seamlessly handles both `async` coroutines and regular synchronous functions.
--e   **Timeout Control:** Set a global timeout for the queue to prevent it from running indefinitely.
--   **Graceful Shutdown:** Configure how the queue handles pending tasks on exit—either cancel them immediately or complete high-priority ones before stopping.
--   **Multiple Modes:** Run in `finite` mode for a set batch of tasks or `infinite` mode for long-running services that continuously process tasks.
+- Run async callables, sync callables, or already-created awaitables
+- Prioritize work with an `asyncio.PriorityQueue`
+- Retry idempotent tasks with optional backoff
+- Apply per-task timeouts and queue-level timeouts
+- Await individual task handles or collect a run summary
+- Cancel pending tasks, cancel running coroutine tasks, or keep `must_complete` tasks alive during timeout handling
+- Use it as a one-shot batch runner or as a long-lived background service
+- Submit tasks and trigger cancellation safely from other threads
+- Use `ThreadTaskQueue` for non-async applications with equivalent queue features
 
 ## Installation
-
-You can install the package from PyPI:
 
 ```bash
 pip install async-queue-manager
 ```
 
-## Basic Usage
-
-Here's how to get started with the `TaskQueue` in just a few lines of code.
+The canonical import is `async_queue`. A compatibility alias for `async_queue_manager` is also included.
 
 ```python
-import asyncio
-import time
-
-# 1. Import the TaskQueue
-from async_queue_manager import TaskQueue
-
-# 2. Define some tasks (can be async or regular functions)
-async def async_task(duration, name):
-    """An example asynchronous task."""
-    print(f"Starting async task: {name}")
-    await asyncio.sleep(duration)
-    print(f"✅ Finished async task: {name}")
-
-def sync_task(duration, name):
-    """An example synchronous task."""
-    print(f"Starting sync task: {name}")
-    time.sleep(duration)
-    print(f"✅ Finished sync task: {name}")
-
-async def main():
-    # 3. Create a TaskQueue instance
-    task_queue = TaskQueue()
-
-    # 4. Add tasks to the queue
-    print("Adding tasks to the queue...")
-    task_queue.add_task(async_task, 1, "A (Low Prio)")
-    task_queue.add_task(sync_task, 2, "B (Sync)")
-    task_queue.add_task(async_task, 0.5, "C (High Prio)")
-
-    # 5. Run the queue and wait for all tasks to complete
-    print("🚀 Starting the queue...")
-    start_time = time.monotonic()
-    await task_queue.run()
-    end_time = time.monotonic()
-    
-    print(f"🎉 All tasks completed in {end_time - start_time:.2f} seconds!")
-
-if __name__ == "__main__":
-    asyncio.run(main())
+from async_queue import TaskQueue
 ```
 
-## Advanced Usage
+For non-async applications:
 
-### Task Prioritization
+```python
+from async_queue import ThreadTaskQueue
+```
 
-You can assign a `priority` to each task. Tasks with a lower number have a higher priority and will be executed first.
+## Quick Start
 
 ```python
 import asyncio
-from async_queue_manager import TaskQueue
 
-async def my_task(name):
-    print(f"Executing task: {name}")
-    await asyncio.sleep(0.1)
+from async_queue import TaskQueue
 
-async def main():
-    queue = TaskQueue()
 
-    # Add tasks with different priorities
-    queue.add_task(my_task, "Task A (Priority 5)", priority=5)
-    queue.add_task(my_task, "Task B (Priority 10)", priority=10)
-    queue.add_task(my_task, "Task C (Priority 1)", priority=1) # Highest priority
+async def fetch(delay: float, name: str) -> str:
+    await asyncio.sleep(delay)
+    return f"finished {name}"
 
-    # The queue will execute tasks in this order: C, A, B
+
+async def main() -> None:
+    queue = TaskQueue(max_workers=2)
+
+    first = queue.add_task(fetch, 0.2, "low-priority", priority=5)
+    second = queue.add_task(fetch, 0.1, "important", priority=1)
+
+    summary = await queue.run()
+
+    print(summary.succeeded)
+    print(second.value())
+    print(first.value())
+
+
+asyncio.run(main())
+```
+
+### Threaded quick start (non-async)
+
+```python
+from async_queue import ThreadTaskQueue
+
+
+def process(delay: float, name: str) -> str:
+    import time
+
+    time.sleep(delay)
+    return f"finished {name}"
+
+
+queue = ThreadTaskQueue(max_workers=2)
+first = queue.add_task(process, 0.2, "low-priority", priority=5)
+second = queue.add_task(process, 0.1, "important", priority=1)
+summary = queue.run()
+
+print(summary.succeeded)
+print(second.value())
+print(first.value())
+```
+
+## More Useful Features
+
+### Retries and timeouts
+
+```python
+import asyncio
+from async_queue import TaskQueue
+
+
+attempts = {"count": 0}
+
+
+async def flaky_call() -> str:
+    attempts["count"] += 1
+    if attempts["count"] < 3:
+        raise RuntimeError("temporary failure")
+    await asyncio.sleep(0.05)
+    return "ok"
+
+
+async def main() -> None:
+    queue = TaskQueue(max_workers=1)
+    handle = queue.add_task(
+        flaky_call,
+        retries=2,
+        retry_delay=0.1,
+        backoff=2.0,
+        timeout=1.0,
+        name="flaky-call",
+    )
+
     await queue.run()
+    print(handle.attempts)
+    print(handle.value())
 
-if __name__ == "__main__":
-    asyncio.run(main())
+
+asyncio.run(main())
 ```
 
-### Timeout and Shutdown Policy
-
-You can control how the queue behaves when it times out using `queue_timeout` and `on_exit`. You can also mark critical tasks with `must_complete=True` to ensure they finish even if the queue times out.
-
--   `on_exit='complete_priority'` (default): When the timeout is reached, the queue stops accepting new tasks but will wait for any tasks marked `must_complete=True` to finish. Other tasks are cancelled.
--   `on_exit='cancel'`: When the timeout is reached, the queue immediately cancels all running and pending tasks.
+### Long-lived service mode
 
 ```python
 import asyncio
-from async_queue_manager import TaskQueue
+from async_queue import TaskQueue
 
-async def long_running_task(duration, name):
-    print(f"Starting task: {name} (will run for {duration}s)")
-    await asyncio.sleep(duration)
-    print(f"✅ Finished task: {name}")
 
-async def main():
-    # Initialize with the 'complete_priority' shutdown policy
-    queue = TaskQueue(on_exit='complete_priority')
+def double(value: int) -> int:
+    return value * 2
 
-    # This task will likely be cancelled by the timeout
-    queue.add_task(long_running_task, 4, "Normal Task")
 
-    # This task will be allowed to finish because must_complete is True
-    queue.add_task(long_running_task, 4, "Critical Task", must_complete=True)
+async def main() -> None:
+    async with TaskQueue(mode="infinite", max_workers=2) as queue:
+        handles = queue.map(double, [1, 2, 3, 4])
+        await queue.join()
+        print([handle.value() for handle in handles])
 
-    print("Running queue with a 2-second timeout...")
-    await queue.run(queue_timeout=2)
-    print("Queue has finished or timed out.")
-    # Expected output will show "Critical Task" finishing after the timeout is announced.
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 ```
 
-## API Reference
+### Queue timeout policy
+
+`on_exit="cancel"` cancels pending work and requests cancellation for running work when the queue timeout expires.
+
+`on_exit="complete_priority"` keeps only tasks marked with `must_complete=True` and drops the rest.
+
+```python
+queue = TaskQueue(on_exit="complete_priority")
+queue.add_task(send_invoice, must_complete=True)
+queue.add_task(send_metrics)
+summary = await queue.run(queue_timeout=5.0)
+```
+
+## Public API
 
 ### `TaskQueue(...)`
 
-The main class for managing the queue.
+- `size`: queue capacity. `0` means unbounded.
+- `max_workers`: fixed worker count. Leave as `None` to auto-scale up to a safe cap.
+- `queue_timeout`: default timeout for `run()`.
+- `on_exit`: `"cancel"` or `"complete_priority"`.
+- `mode`: `"finite"` for batch runs or `"infinite"` for service mode.
+- `raise_on_error`: raise `QueueExecutionError` when `run()` finishes with failures.
 
-| Parameter       | Type                                | Description                                                                     | Default               |
-|-----------------|-------------------------------------|---------------------------------------------------------------------------------|-----------------------|
-| `size`          | `int`                               | The maximum size of the queue. `0` means infinite.                              | `0`                   |
-| `queue_timeout` | `int`                               | Default timeout in seconds for the queue when `run()` is called.                | `0` (no timeout)      |
-| `on_exit`       | `'cancel'` or `'complete_priority'` | The policy for handling tasks on shutdown or timeout.                           | `'complete_priority'` |
-| `mode`          | `'finite'` or `'infinite'`          | `'finite'` stops when empty; `'infinite'` keeps the queue running indefinitely. | `'finite'`            |
+### `TaskQueue.add_task(...)` and `TaskQueue.submit(...)`
 
-### `TaskQueue.add_task(...)`
+- Accept async callables, sync callables, or awaitables
+- Return a `TaskHandle`
+- Support `priority`, `must_complete`, `timeout`, `retries`, `retry_delay`, `backoff`, and `name`
 
-Adds a new task to the queue.
+### `TaskQueue.map(task, iterable, ...)`
 
-| Parameter           | Type                   | Description                                                                                | Default |
-|---------------------|------------------------|--------------------------------------------------------------------------------------------|---------|
-| `task`              | `Callable` `Coroutine` | The async or sync function to execute.                                                     |         |
-| `*args`, `**kwargs` | `Any`                  | Arguments to pass to the task function.                                                    |         |
-| `must_complete`     | `bool`                 | If `True`, task is completed even if queue times out (with `on_exit='complete_priority'`). | `False` |
-| `priority`          | `int`                  | The priority of the task. A lower number means higher priority.                            | `3`     |
+- Submit a batch in one call
+- Tuple entries are expanded as positional args
+- Mapping entries are expanded as keyword args
 
-### `await TaskQueue.run(...)`
+### `TaskHandle`
 
-Starts the queue workers and waits for tasks to complete.
+- `await handle` or `await handle.wait()` for the final `TaskResult`
+- `handle.value()` for the successful return value
+- `handle.cancel()` to cancel an individual pending or running task
+- `handle.status`, `handle.attempts`, `handle.done()`, and `handle.cancelled()`
 
-| Parameter       | Type  | Description                                          | Default |
-|-----------------|-------|------------------------------------------------------|---------|
-| `queue_timeout` | `int` | Overrides the default timeout for this specific run. | `None`  |
+### `QueueRunSummary`
 
+- `total_submitted`
+- `succeeded`
+- `failed`
+- `cancelled`
+- `timed_out`
+- `duration`
+- `results`
 
-## Contributing
+### `ThreadTaskQueue(...)`
 
-Contributions are welcome! If you'd like to contribute, please follow these steps:
+- Same queue options and task options as `TaskQueue`
+- Synchronous lifecycle methods: `start()`, `join()`, `run()`, `shutdown()`
+- Use with a standard context manager: `with ThreadTaskQueue(...) as queue: ...`
 
-1.  Fork the repository.
-2.  Clone your fork and set up the development environment:
-    ```bash
-    git clone [https://github.com/YOUR_USERNAME/taskqueue.git](https://github.com/YOUR_USERNAME/taskqueue.git)
-    cd taskqueue
-    pip install -e .[dev]
-    ```
-3.  Make your changes and add tests for them.
-4.  Run the tests to ensure everything is working:
-    ```bash
-    pytest
-    ```
-5.  Submit a pull request with a clear description of your changes.
+### `ThreadTaskHandle` and `ThreadQueueRunSummary`
+
+- `ThreadTaskHandle.wait(timeout=None)` blocks for completion
+- `ThreadTaskHandle.value()` returns the successful value
+- `ThreadTaskHandle.cancel()` cancels pending work and requests cancellation for running work
+- `ThreadQueueRunSummary` mirrors `QueueRunSummary` fields
+
+## Development
+
+```bash
+pip install -e .[dev]
+ruff check .
+pytest
+python -m build
+```
+
+## Notes
+
+- Retries are safest for idempotent tasks.
+- Cancelling a sync callable that is already running in a thread is best-effort only; the Python task is cancelled immediately, but the underlying thread cannot be force-stopped safely.
+- In `ThreadTaskQueue`, cancellation and timeout for already-running tasks are cooperative; queue state is updated immediately while underlying work may still finish in the background.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+MIT. See [LICENSE](LICENSE).

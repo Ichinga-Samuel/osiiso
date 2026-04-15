@@ -7,8 +7,8 @@ import uuid
 from typing import Any
 
 
-class QueueItem:
-    """Wrap a callable or awaitable together with its execution options."""
+class ThreadQueueItem:
+    """Wrap a callable or awaitable for threaded queue execution."""
 
     must_complete: bool
 
@@ -34,12 +34,12 @@ class QueueItem:
         return hash(self.task_id)
 
     def __lt__(self, other: object) -> bool:
-        if not isinstance(other, QueueItem):
+        if not isinstance(other, ThreadQueueItem):
             return NotImplemented
         return (self.created_at, self.task_id) < (other.created_at, other.task_id)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, QueueItem):
+        if not isinstance(other, ThreadQueueItem):
             return NotImplemented
         return self.task_id == other.task_id
 
@@ -65,7 +65,7 @@ class QueueItem:
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
-    ) -> QueueItem:
+    ) -> ThreadQueueItem:
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be greater than 0")
         if retries < 0:
@@ -84,14 +84,14 @@ class QueueItem:
             self.name = name
         return self
 
-    async def __call__(self) -> Any:
+    def __call__(self) -> Any:
         if inspect.isawaitable(self.task):
-            return await self.task
+            return asyncio.run(self.task)
 
         if inspect.iscoroutinefunction(self.task):
-            return await self.task(*self.args, **self.kwargs)
+            return asyncio.run(self.task(*self.args, **self.kwargs))
 
-        result = await asyncio.to_thread(self.task, *self.args, **self.kwargs)
+        result = self.task(*self.args, **self.kwargs)
         if inspect.isawaitable(result):
-            return await result
+            return asyncio.run(result)
         return result
