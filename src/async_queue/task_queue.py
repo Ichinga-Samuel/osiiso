@@ -12,6 +12,7 @@ from threading import Lock, get_ident
 from typing import Any, TypeVar
 
 from ._base import (
+    FailPolicy,
     QueueMode,
     QueueRunSummary,
     ShutdownPolicy,
@@ -42,6 +43,9 @@ class TaskHandle:
         "_result",
         "_status",
         "_started_at",
+        "group_id",
+        "detached",
+        "scheduled_for",
     )
 
     def __init__(
@@ -53,12 +57,18 @@ class TaskHandle:
         must_complete: bool,
         created_at: float,
         cancel_callback: Any,
+        group_id: str | None = None,
+        detached: bool = False,
+        scheduled_for: float | None = None,
     ) -> None:
         self.task_id = task_id
         self.name = name
         self.priority = priority
         self.must_complete = must_complete
         self.created_at = created_at
+        self.group_id = group_id
+        self.detached = detached
+        self.scheduled_for = scheduled_for
         self._attempts = 0
         self._cancel_callback = cancel_callback
         self._waiters: set[asyncio.Future[TaskResult]] = set()
@@ -163,11 +173,39 @@ class TaskHandle:
 
 @dataclass(order=True, slots=True)
 class _QueueEntry:
+    scheduled_key: float
     priority: int
     sequence: int
     item: QueueItem = field(compare=False)
     handle: TaskHandle = field(compare=False)
     is_sentinel: bool = field(default=False, compare=False)
+
+
+class TaskGroupHandle:
+    """A structured handle for a group of asyncio queue tasks."""
+
+    def __init__(self, group_id: str, handles: Iterable[TaskHandle]) -> None:
+        self.group_id = group_id
+        self.handles = tuple(handles)
+
+    def __iter__(self):
+        return iter(self.handles)
+
+    def __len__(self) -> int:
+        return len(self.handles)
+
+    def cancel(self) -> int:
+        return sum(1 for handle in self.handles if handle.cancel())
+
+    async def wait(self) -> QueueRunSummary:
+        run_start = time.perf_counter()
+        results = [await handle.wait() for handle in self.handles]
+        return QueueRunSummary.from_results(results, run_start=run_start, timed_out=False)
+
+    async def values(self) -> tuple[Any, ...]:
+        summary = await self.wait()
+        summary.raise_for_errors()
+        return summary.values
 
 
 class TaskQueue:
@@ -185,6 +223,7 @@ class TaskQueue:
         on_exit: ShutdownPolicy = "complete_priority",
         mode: QueueMode = "finite",
         raise_on_error: bool = False,
+        fail_policy: FailPolicy = "continue",
         auto_worker_limit: int | None = None,
         on_task_complete: Callable[[TaskResult], Any] | None = None,
     ) -> None:
@@ -198,6 +237,8 @@ class TaskQueue:
             raise ValueError("on_exit must be 'cancel' or 'complete_priority'")
         if mode not in {"finite", "infinite"}:
             raise ValueError("mode must be 'finite' or 'infinite'")
+        if fail_policy not in {"continue", "fail_first"}:
+            raise ValueError("fail_policy must be 'continue' or 'fail_first'")
 
         self.queue = queue or asyncio.PriorityQueue(maxsize=size)
         self.max_workers = max_workers
@@ -206,6 +247,7 @@ class TaskQueue:
         self.on_exit = on_exit
         self.mode = mode
         self.raise_on_error = raise_on_error
+        self.fail_policy = fail_policy
         self._on_task_complete = on_task_complete
 
         self.worker_tasks: dict[int, asyncio.Task[None]] = {}
@@ -266,10 +308,14 @@ class TaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
         **kwargs: Any,
     ) -> TaskHandle:
         return self.submit(
@@ -278,6 +324,8 @@ class TaskQueue:
             must_complete=must_complete,
             priority=priority,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
@@ -293,10 +341,14 @@ class TaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
         **kwargs: Any,
     ) -> TaskHandle:
         item = QueueItem(task, *args, **kwargs)
@@ -305,10 +357,14 @@ class TaskQueue:
             priority=priority,
             must_complete=must_complete,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
 
     def map(
@@ -319,19 +375,27 @@ class TaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
     ) -> list[TaskHandle]:
         opts = dict(
             must_complete=must_complete,
             priority=priority,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
         handles: list[TaskHandle] = []
         for entry in iterable:
@@ -343,6 +407,55 @@ class TaskQueue:
                 handles.append(self.submit(task, entry, **opts))
         return handles
 
+    def fire_and_forget(
+        self,
+        task: Any,
+        /,
+        *args: Any,
+        priority: int = 3,
+        timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
+        retries: int = 0,
+        retry_delay: float = 0.0,
+        backoff: float = 1.0,
+        name: str | None = None,
+        **kwargs: Any,
+    ) -> TaskHandle:
+        return self.submit(
+            task,
+            *args,
+            priority=priority,
+            timeout=timeout,
+            delay=delay,
+            run_at=run_at,
+            retries=retries,
+            retry_delay=retry_delay,
+            backoff=backoff,
+            name=name,
+            detached=True,
+            **kwargs,
+        )
+
+    async def background(self, task: Any, /, *args: Any, **kwargs: Any) -> TaskHandle:
+        if not self._started:
+            await self.start()
+        return self.fire_and_forget(task, *args, **kwargs)
+
+    def submit_group(
+        self,
+        task: Any,
+        iterable: Iterable[Any],
+        *,
+        group_id: str | None = None,
+        **kwargs: Any,
+    ) -> TaskGroupHandle:
+        group_id = group_id or f"group-{next(self._counter)}"
+        handles = self.map(task, iterable, group_id=group_id, **kwargs)
+        return TaskGroupHandle(group_id, handles)
+
+    group = submit_group
+
     def add(
         self,
         *,
@@ -351,10 +464,14 @@ class TaskQueue:
         must_complete: bool = False,
         with_new_workers: bool = True,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
     ) -> TaskHandle:
         if self._closed or not self._accepting or self.stop:
             raise QueueClosedError("queue is not accepting new tasks")
@@ -362,10 +479,14 @@ class TaskQueue:
         configured_item = item.configure(
             must_complete=must_complete,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
 
         handle = TaskHandle(
@@ -375,11 +496,15 @@ class TaskQueue:
             must_complete=configured_item.must_complete,
             created_at=configured_item.created_at,
             cancel_callback=self._cancel_task,
+            group_id=configured_item.group_id,
+            detached=configured_item.detached,
+            scheduled_for=configured_item.scheduled_for,
         )
         self._bind_handle(handle)
         self._call_in_queue_loop(
             self._enqueue_entry,
             _QueueEntry(
+                scheduled_key=configured_item.scheduled_for or 0.0,
                 priority=priority,
                 sequence=next(self._counter),
                 item=configured_item,
@@ -420,6 +545,7 @@ class TaskQueue:
         queue_timeout: float | None = None,
         *,
         raise_on_error: bool | None = None,
+        fail_policy: FailPolicy | None = None,
     ) -> QueueRunSummary:
         if self._run_in_progress:
             raise RuntimeError("run() cannot be called while another run is in progress")
@@ -428,6 +554,11 @@ class TaskQueue:
         run_start = time.perf_counter()
         result_index = len(self._results)
         timeout = queue_timeout if queue_timeout is not None else self.queue_timeout
+        original_fail_policy = self.fail_policy
+        if fail_policy is not None:
+            if fail_policy not in {"continue", "fail_first"}:
+                raise ValueError("fail_policy must be 'continue' or 'fail_first'")
+            self.fail_policy = fail_policy
 
         await self.start()
 
@@ -444,6 +575,7 @@ class TaskQueue:
             )
             self._timed_out = False
             self._run_in_progress = False
+            self.fail_policy = original_fail_policy
 
         should_raise = self.raise_on_error if raise_on_error is None else raise_on_error
         if should_raise:
@@ -617,6 +749,7 @@ class TaskQueue:
                     continue
 
                 try:
+                    await self._wait_until_scheduled(entry)
                     await self._execute_entry(entry)
                 finally:
                     self.queue.task_done()
@@ -791,6 +924,11 @@ class TaskQueue:
     def _record_result(self, handle: TaskHandle, result: TaskResult) -> None:
         handle._mark_finished(result)
         self._results.append(result)
+        if result.status == "failed" and self.fail_policy == "fail_first" and not self.stop:
+            self.stop = True
+            self.queue_cancelled = True
+            self._cancel_pending_entries(include_must_complete=True)
+            self._cancel_running_entries(include_must_complete=True)
         if self._on_task_complete is not None:
             try:
                 self._on_task_complete(result)
@@ -809,6 +947,7 @@ class TaskQueue:
             self.queue.put_nowait(
                 _QueueEntry(
                     priority=10**9,
+                    scheduled_key=0.0,
                     sequence=next(self._counter),
                     item=QueueItem(self._sentinel_task),
                     handle=TaskHandle(
@@ -829,3 +968,11 @@ class TaskQueue:
 
     async def _sentinel_task(self) -> None:
         return None
+
+    @staticmethod
+    async def _wait_until_scheduled(entry: _QueueEntry) -> None:
+        if entry.item.scheduled_for is None:
+            return
+        delay = entry.item.scheduled_for - time.perf_counter()
+        if delay > 0:
+            await asyncio.sleep(delay)

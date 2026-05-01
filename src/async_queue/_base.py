@@ -3,13 +3,14 @@ from __future__ import annotations
 import inspect
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 TaskStatus = Literal["pending", "running", "retrying", "succeeded", "failed", "cancelled"]
 QueueMode = Literal["finite", "infinite"]
 ShutdownPolicy = Literal["cancel", "complete_priority"]
+FailPolicy = Literal["continue", "fail_first"]
 
 _QI = TypeVar("_QI", bound="_BaseQueueItem")
 
@@ -26,6 +27,9 @@ class TaskResult:
     attempts: int = 0
     priority: int = 0
     must_complete: bool = False
+    group_id: str | None = None
+    detached: bool = False
+    scheduled_for: float | None = None
     created_at: float = 0.0
     started_at: float | None = None
     finished_at: float = 0.0
@@ -48,6 +52,35 @@ class QueueRunSummary:
     @property
     def errors(self) -> tuple[TaskResult, ...]:
         return tuple(r for r in self.results if r.status == "failed")
+
+    @property
+    def values(self) -> tuple[Any, ...]:
+        return tuple(r.value for r in self.results if r.status == "succeeded")
+
+    @property
+    def ok(self) -> bool:
+        return self.failed == 0 and self.cancelled == 0 and not self.timed_out
+
+    def by_task_id(self) -> dict[str, TaskResult]:
+        return {r.task_id: r for r in self.results}
+
+    def by_name(self) -> dict[str, tuple[TaskResult, ...]]:
+        grouped: dict[str, list[TaskResult]] = defaultdict(list)
+        for result in self.results:
+            grouped[result.name].append(result)
+        return {name: tuple(results) for name, results in grouped.items()}
+
+    def by_group(self) -> dict[str | None, tuple[TaskResult, ...]]:
+        grouped: dict[str | None, list[TaskResult]] = defaultdict(list)
+        for result in self.results:
+            grouped[result.group_id].append(result)
+        return {group_id: tuple(results) for group_id, results in grouped.items()}
+
+    def successes(self) -> tuple[TaskResult, ...]:
+        return tuple(r for r in self.results if r.status == "succeeded")
+
+    def cancellations(self) -> tuple[TaskResult, ...]:
+        return tuple(r for r in self.results if r.status == "cancelled")
 
     def raise_for_errors(self) -> None:
         from .exceptions import QueueExecutionError
@@ -98,6 +131,9 @@ class _BaseQueueItem:
         self.retry_delay = 0.0
         self.backoff = 1.0
         self.must_complete = False
+        self.group_id: str | None = None
+        self.detached = False
+        self.scheduled_for: float | None = None
 
     def __hash__(self) -> int:
         return hash(self.task_id)
@@ -121,6 +157,10 @@ class _BaseQueueItem:
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
+        delay: float | None = None,
+        run_at: float | None = None,
     ) -> _QI:
         if timeout is not None and timeout <= 0:
             raise ValueError("timeout must be greater than 0")
@@ -130,12 +170,17 @@ class _BaseQueueItem:
             raise ValueError("retry_delay must be greater than or equal to 0")
         if backoff <= 0:
             raise ValueError("backoff must be greater than 0")
+        if delay is not None and delay < 0:
+            raise ValueError("delay must be greater than or equal to 0")
 
         self.must_complete = must_complete
         self.timeout = timeout
         self.retries = retries
         self.retry_delay = retry_delay
         self.backoff = backoff
+        self.group_id = group_id
+        self.detached = detached
+        self.scheduled_for = _resolve_schedule(delay=delay, run_at=run_at)
         if name:
             self.name = name
         return self
@@ -174,9 +219,22 @@ def _make_result(
         attempts=handle.attempts,
         priority=handle.priority,
         must_complete=handle.must_complete,
+        group_id=getattr(handle, "group_id", None),
+        detached=getattr(handle, "detached", False),
+        scheduled_for=getattr(handle, "scheduled_for", None),
         created_at=handle.created_at,
         started_at=started_at,
         finished_at=finished_at,
         duration=(finished_at - started_at) if started_at else 0.0,
         message=message,
     )
+
+
+def _resolve_schedule(*, delay: float | None, run_at: float | None) -> float | None:
+    if delay is not None and run_at is not None:
+        raise ValueError("delay and run_at cannot both be set")
+    if delay is not None:
+        return time.perf_counter() + delay
+    if run_at is not None:
+        return time.perf_counter() + max(0.0, run_at - time.time())
+    return None

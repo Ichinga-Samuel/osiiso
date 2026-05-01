@@ -12,6 +12,7 @@ from logging import getLogger
 from typing import Any
 
 from ._base import (
+    FailPolicy,
     QueueMode,
     QueueRunSummary,
     ShutdownPolicy,
@@ -40,6 +41,9 @@ class ThreadTaskHandle:
         "_result",
         "_status",
         "_started_at",
+        "group_id",
+        "detached",
+        "scheduled_for",
     )
 
     def __init__(
@@ -51,12 +55,18 @@ class ThreadTaskHandle:
         must_complete: bool,
         created_at: float,
         cancel_callback: Any,
+        group_id: str | None = None,
+        detached: bool = False,
+        scheduled_for: float | None = None,
     ) -> None:
         self.task_id = task_id
         self.name = name
         self.priority = priority
         self.must_complete = must_complete
         self.created_at = created_at
+        self.group_id = group_id
+        self.detached = detached
+        self.scheduled_for = scheduled_for
         self._attempts = 0
         self._cancel_callback = cancel_callback
         self._condition = threading.Condition()
@@ -140,11 +150,43 @@ class ThreadTaskHandle:
 
 @dataclass(order=True, slots=True)
 class _ThreadQueueEntry:
+    scheduled_key: float
     priority: int
     sequence: int
     item: ThreadQueueItem = field(compare=False)
     handle: ThreadTaskHandle = field(compare=False)
     is_sentinel: bool = field(default=False, compare=False)
+
+
+class ThreadTaskGroupHandle:
+    """A structured handle for a group of thread queue tasks."""
+
+    def __init__(self, group_id: str, handles: Iterable[ThreadTaskHandle]) -> None:
+        self.group_id = group_id
+        self.handles = tuple(handles)
+
+    def __iter__(self):
+        return iter(self.handles)
+
+    def __len__(self) -> int:
+        return len(self.handles)
+
+    def cancel(self) -> int:
+        return sum(1 for handle in self.handles if handle.cancel())
+
+    def wait(self, timeout: float | None = None) -> QueueRunSummary:
+        run_start = time.perf_counter()
+        deadline = None if timeout is None else time.perf_counter() + timeout
+        results: list[TaskResult] = []
+        for handle in self.handles:
+            remaining = None if deadline is None else max(0.0, deadline - time.perf_counter())
+            results.append(handle.wait(timeout=remaining))
+        return QueueRunSummary.from_results(results, run_start=run_start, timed_out=False)
+
+    def values(self, timeout: float | None = None) -> tuple[Any, ...]:
+        summary = self.wait(timeout=timeout)
+        summary.raise_for_errors()
+        return summary.values
 
 
 @dataclass(slots=True)
@@ -171,6 +213,7 @@ class ThreadTaskQueue:
         on_exit: ShutdownPolicy = "complete_priority",
         mode: QueueMode = "finite",
         raise_on_error: bool = False,
+        fail_policy: FailPolicy = "continue",
         auto_worker_limit: int | None = None,
         poll_interval: float = 0.05,
         on_task_complete: Callable[[TaskResult], Any] | None = None,
@@ -185,6 +228,8 @@ class ThreadTaskQueue:
             raise ValueError("on_exit must be 'cancel' or 'complete_priority'")
         if mode not in {"finite", "infinite"}:
             raise ValueError("mode must be 'finite' or 'infinite'")
+        if fail_policy not in {"continue", "fail_first"}:
+            raise ValueError("fail_policy must be 'continue' or 'fail_first'")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be greater than 0")
 
@@ -195,6 +240,7 @@ class ThreadTaskQueue:
         self.on_exit = on_exit
         self.mode = mode
         self.raise_on_error = raise_on_error
+        self.fail_policy = fail_policy
         self.poll_interval = poll_interval
         self._on_task_complete = on_task_complete
 
@@ -257,6 +303,8 @@ class ThreadTaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
@@ -269,6 +317,8 @@ class ThreadTaskQueue:
             must_complete=must_complete,
             priority=priority,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
@@ -284,10 +334,14 @@ class ThreadTaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
         **kwargs: Any,
     ) -> ThreadTaskHandle:
         item = ThreadQueueItem(task, *args, **kwargs)
@@ -296,10 +350,14 @@ class ThreadTaskQueue:
             priority=priority,
             must_complete=must_complete,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
 
     def map(
@@ -310,19 +368,27 @@ class ThreadTaskQueue:
         must_complete: bool = False,
         priority: int = 3,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
     ) -> list[ThreadTaskHandle]:
         opts = dict(
             must_complete=must_complete,
             priority=priority,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
         handles: list[ThreadTaskHandle] = []
         for entry in iterable:
@@ -334,6 +400,28 @@ class ThreadTaskQueue:
                 handles.append(self.submit(task, entry, **opts))
         return handles
 
+    def fire_and_forget(self, task: Any, /, *args: Any, **kwargs: Any) -> ThreadTaskHandle:
+        return self.submit(task, *args, detached=True, **kwargs)
+
+    def background(self, task: Any, /, *args: Any, **kwargs: Any) -> ThreadTaskHandle:
+        if not self._started:
+            self.start()
+        return self.fire_and_forget(task, *args, **kwargs)
+
+    def submit_group(
+        self,
+        task: Any,
+        iterable: Iterable[Any],
+        *,
+        group_id: str | None = None,
+        **kwargs: Any,
+    ) -> ThreadTaskGroupHandle:
+        group_id = group_id or f"group-{next(self._counter)}"
+        handles = self.map(task, iterable, group_id=group_id, **kwargs)
+        return ThreadTaskGroupHandle(group_id, handles)
+
+    group = submit_group
+
     def add(
         self,
         *,
@@ -342,10 +430,14 @@ class ThreadTaskQueue:
         must_complete: bool = False,
         with_new_workers: bool = True,
         timeout: float | None = None,
+        delay: float | None = None,
+        run_at: float | None = None,
         retries: int = 0,
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
+        group_id: str | None = None,
+        detached: bool = False,
     ) -> ThreadTaskHandle:
         with self._state_lock:
             if self._closed or not self._accepting or self.stop:
@@ -354,10 +446,14 @@ class ThreadTaskQueue:
         configured_item = item.configure(
             must_complete=must_complete,
             timeout=timeout,
+            delay=delay,
+            run_at=run_at,
             retries=retries,
             retry_delay=retry_delay,
             backoff=backoff,
             name=name,
+            group_id=group_id,
+            detached=detached,
         )
 
         handle = ThreadTaskHandle(
@@ -367,10 +463,14 @@ class ThreadTaskQueue:
             must_complete=configured_item.must_complete,
             created_at=configured_item.created_at,
             cancel_callback=self._cancel_task,
+            group_id=configured_item.group_id,
+            detached=configured_item.detached,
+            scheduled_for=configured_item.scheduled_for,
         )
 
         self._enqueue_entry(
             _ThreadQueueEntry(
+                scheduled_key=configured_item.scheduled_for or 0.0,
                 priority=priority,
                 sequence=next(self._counter),
                 item=configured_item,
@@ -415,6 +515,7 @@ class ThreadTaskQueue:
         queue_timeout: float | None = None,
         *,
         raise_on_error: bool | None = None,
+        fail_policy: FailPolicy | None = None,
     ) -> QueueRunSummary:
         with self._state_lock:
             if self._run_in_progress:
@@ -424,6 +525,11 @@ class ThreadTaskQueue:
 
         run_start = time.perf_counter()
         timeout = queue_timeout if queue_timeout is not None else self.queue_timeout
+        original_fail_policy = self.fail_policy
+        if fail_policy is not None:
+            if fail_policy not in {"continue", "fail_first"}:
+                raise ValueError("fail_policy must be 'continue' or 'fail_first'")
+            self.fail_policy = fail_policy
 
         self.start()
 
@@ -438,6 +544,7 @@ class ThreadTaskQueue:
                 timed_out = self._timed_out
                 self._timed_out = False
                 self._run_in_progress = False
+                self.fail_policy = original_fail_policy
 
             summary = QueueRunSummary.from_results(
                 collected, run_start=run_start, timed_out=timed_out
@@ -572,6 +679,7 @@ class ThreadTaskQueue:
                     continue
 
                 try:
+                    self._wait_until_scheduled(entry)
                     self._execute_entry(entry)
                 finally:
                     self.queue.task_done()
@@ -820,6 +928,12 @@ class ThreadTaskQueue:
         handle._mark_finished(result)
         with self._state_lock:
             self._results.append(result)
+        if result.status == "failed" and self.fail_policy == "fail_first" and not self.stop:
+            with self._state_lock:
+                self.stop = True
+                self.queue_cancelled = True
+            self._cancel_pending_entries(include_must_complete=True)
+            self._cancel_running_entries(include_must_complete=True)
         if self._on_task_complete is not None:
             try:
                 self._on_task_complete(result)
@@ -839,6 +953,7 @@ class ThreadTaskQueue:
         for _ in range(len(workers)):
             self.queue.put(
                 _ThreadQueueEntry(
+                    scheduled_key=0.0,
                     priority=10**9,
                     sequence=next(self._counter),
                     item=ThreadQueueItem(self._sentinel_task),
@@ -885,3 +1000,11 @@ class ThreadTaskQueue:
                     return False
                 self.queue.all_tasks_done.wait(timeout=remaining)
             return True
+
+    @staticmethod
+    def _wait_until_scheduled(entry: _ThreadQueueEntry) -> None:
+        if entry.item.scheduled_for is None:
+            return
+        delay = entry.item.scheduled_for - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
