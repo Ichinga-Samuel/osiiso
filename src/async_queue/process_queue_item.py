@@ -7,13 +7,15 @@ from typing import Any
 from ._base import _BaseQueueItem
 
 
-class ThreadQueueItem(_BaseQueueItem):
-    """Wrap a callable or awaitable for threaded queue execution."""
+class ProcessQueueItem(_BaseQueueItem):
+    """Wrap a pickleable callable for process-based queue execution."""
+
+    def __init__(self, task: Any, /, *args: Any, **kwargs: Any) -> None:
+        if inspect.isawaitable(task):
+            raise TypeError("process queue tasks must be callable, not awaitable objects")
+        super().__init__(task, *args, **kwargs)
 
     def __call__(self) -> Any:
-        if inspect.isawaitable(self.task):
-            return asyncio.run(self.task)
-
         if inspect.iscoroutinefunction(self.task):
             return asyncio.run(self.task(*self.args, **self.kwargs))
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import multiprocessing
 import os
 import queue as queue_module
 import threading
@@ -9,6 +10,7 @@ from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import CancelledError
 from dataclasses import dataclass, field
 from logging import getLogger
+from multiprocessing.context import BaseContext
 from typing import Any
 
 from ._base import (
@@ -20,13 +22,23 @@ from ._base import (
     _make_result,
 )
 from .exceptions import QueueClosedError
-from .thread_queue_item import ThreadQueueItem
+from .process_queue_item import ProcessQueueItem
 
 logger = getLogger(__name__)
 
 
-class ThreadTaskHandle:
-    """A blocking handle for inspecting, waiting, or cancelling queued thread tasks."""
+def _invoke_process_item(item: ProcessQueueItem, result_queue: Any) -> None:
+    try:
+        result_queue.put(("value", item()))
+    except BaseException as exc:
+        try:
+            result_queue.put(("error", exc))
+        except BaseException:
+            result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
+
+
+class ProcessTaskHandle:
+    """A blocking handle for inspecting, waiting, or cancelling queued process tasks."""
 
     __slots__ = (
         "task_id",
@@ -66,7 +78,7 @@ class ThreadTaskHandle:
 
     def __repr__(self) -> str:
         return (
-            "ThreadTaskHandle("
+            "ProcessTaskHandle("
             f"task_id={self.task_id!r}, name={self.name!r}, status={self.status!r}, "
             f"attempts={self.attempts}, priority={self.priority})"
         )
@@ -139,25 +151,26 @@ class ThreadTaskHandle:
 
 
 @dataclass(order=True, slots=True)
-class _ThreadQueueEntry:
+class _ProcessQueueEntry:
     priority: int
     sequence: int
-    item: ThreadQueueItem = field(compare=False)
-    handle: ThreadTaskHandle = field(compare=False)
+    item: ProcessQueueItem = field(compare=False)
+    handle: ProcessTaskHandle = field(compare=False)
     is_sentinel: bool = field(default=False, compare=False)
 
 
 @dataclass(slots=True)
-class _RunningTask:
+class _RunningProcess:
     cancel_event: threading.Event
+    process: multiprocessing.Process | None = None
 
 
-class _TaskCancelled(Exception):
-    """Internal signal for cooperative cancellation."""
+class _ProcessTaskCancelled(Exception):
+    """Internal signal for process task cancellation."""
 
 
-class ThreadTaskQueue:
-    """A thread-based task queue with priorities, retries, and graceful shutdown."""
+class ProcessTaskQueue:
+    """A process-based task queue with priorities, retries, and graceful shutdown."""
 
     start_time: float
 
@@ -166,7 +179,7 @@ class ThreadTaskQueue:
         *,
         size: int = 0,
         max_workers: int | None = None,
-        queue: queue_module.PriorityQueue[_ThreadQueueEntry] | None = None,
+        queue: queue_module.PriorityQueue[_ProcessQueueEntry] | None = None,
         queue_timeout: float | None = None,
         on_exit: ShutdownPolicy = "complete_priority",
         mode: QueueMode = "finite",
@@ -174,6 +187,7 @@ class ThreadTaskQueue:
         auto_worker_limit: int | None = None,
         poll_interval: float = 0.05,
         on_task_complete: Callable[[TaskResult], Any] | None = None,
+        context: BaseContext | None = None,
     ) -> None:
         if size < 0:
             raise ValueError("size must be greater than or equal to 0")
@@ -190,12 +204,13 @@ class ThreadTaskQueue:
 
         self.queue = queue or queue_module.PriorityQueue(maxsize=size)
         self.max_workers = max_workers
-        self.auto_worker_limit = auto_worker_limit or max(4, min(32, (os.cpu_count() or 1) * 4))
+        self.auto_worker_limit = auto_worker_limit or max(1, min(32, os.cpu_count() or 1))
         self.queue_timeout = queue_timeout
         self.on_exit = on_exit
         self.mode = mode
         self.raise_on_error = raise_on_error
         self.poll_interval = poll_interval
+        self.context = context or multiprocessing.get_context()
         self._on_task_complete = on_task_complete
 
         self.worker_threads: dict[int, threading.Thread] = {}
@@ -207,16 +222,14 @@ class ThreadTaskQueue:
         self._closed = False
         self._counter = itertools.count()
         self._worker_ids = itertools.count(1)
-        self._active_tasks: dict[str, _RunningTask] = {}
-        self._handles: dict[str, ThreadTaskHandle] = {}
+        self._active_tasks: dict[str, _RunningProcess] = {}
+        self._handles: dict[str, ProcessTaskHandle] = {}
         self._results: list[TaskResult] = []
         self._started = False
         self._timed_out = False
         self._run_in_progress = False
         self._shutdown_event = threading.Event()
         self._state_lock = threading.RLock()
-
-    # -- Public properties ---------------------------------------------------
 
     @property
     def active_count(self) -> int:
@@ -247,8 +260,6 @@ class ThreadTaskQueue:
             "closed": self.closed,
         }
 
-    # -- Task submission -----------------------------------------------------
-
     def add_task(
         self,
         task: Any,
@@ -262,7 +273,7 @@ class ThreadTaskQueue:
         backoff: float = 1.0,
         name: str | None = None,
         **kwargs: Any,
-    ) -> ThreadTaskHandle:
+    ) -> ProcessTaskHandle:
         return self.submit(
             task,
             *args,
@@ -289,8 +300,8 @@ class ThreadTaskQueue:
         backoff: float = 1.0,
         name: str | None = None,
         **kwargs: Any,
-    ) -> ThreadTaskHandle:
-        item = ThreadQueueItem(task, *args, **kwargs)
+    ) -> ProcessTaskHandle:
+        item = ProcessQueueItem(task, *args, **kwargs)
         return self.add(
             item=item,
             priority=priority,
@@ -314,7 +325,7 @@ class ThreadTaskQueue:
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
-    ) -> list[ThreadTaskHandle]:
+    ) -> list[ProcessTaskHandle]:
         opts = dict(
             must_complete=must_complete,
             priority=priority,
@@ -324,10 +335,10 @@ class ThreadTaskQueue:
             backoff=backoff,
             name=name,
         )
-        handles: list[ThreadTaskHandle] = []
+        handles: list[ProcessTaskHandle] = []
         for entry in iterable:
             if isinstance(entry, Mapping):
-                handles.append(self.add(item=ThreadQueueItem(task, **entry), **opts))
+                handles.append(self.add(item=ProcessQueueItem(task, **entry), **opts))
             elif isinstance(entry, tuple):
                 handles.append(self.submit(task, *entry, **opts))
             else:
@@ -337,7 +348,7 @@ class ThreadTaskQueue:
     def add(
         self,
         *,
-        item: ThreadQueueItem,
+        item: ProcessQueueItem,
         priority: int = 3,
         must_complete: bool = False,
         with_new_workers: bool = True,
@@ -346,7 +357,7 @@ class ThreadTaskQueue:
         retry_delay: float = 0.0,
         backoff: float = 1.0,
         name: str | None = None,
-    ) -> ThreadTaskHandle:
+    ) -> ProcessTaskHandle:
         with self._state_lock:
             if self._closed or not self._accepting or self.stop:
                 raise QueueClosedError("queue is not accepting new tasks")
@@ -360,7 +371,7 @@ class ThreadTaskQueue:
             name=name,
         )
 
-        handle = ThreadTaskHandle(
+        handle = ProcessTaskHandle(
             task_id=configured_item.task_id,
             name=configured_item.name,
             priority=priority,
@@ -370,7 +381,7 @@ class ThreadTaskQueue:
         )
 
         self._enqueue_entry(
-            _ThreadQueueEntry(
+            _ProcessQueueEntry(
                 priority=priority,
                 sequence=next(self._counter),
                 item=configured_item,
@@ -380,9 +391,7 @@ class ThreadTaskQueue:
         )
         return handle
 
-    # -- Lifecycle -----------------------------------------------------------
-
-    def start(self) -> ThreadTaskQueue:
+    def start(self) -> ProcessTaskQueue:
         with self._state_lock:
             if self._closed:
                 raise QueueClosedError("queue has already been shut down")
@@ -470,7 +479,7 @@ class ThreadTaskQueue:
             self._closed = True
             self._shutdown_event.set()
 
-    def __enter__(self) -> ThreadTaskQueue:
+    def __enter__(self) -> ProcessTaskQueue:
         self.start()
         return self
 
@@ -484,7 +493,7 @@ class ThreadTaskQueue:
             shutdown_thread = threading.Thread(
                 target=self.shutdown,
                 kwargs={"cancel_pending": True},
-                name="TaskQueueCancelThread",
+                name="ProcessTaskQueueCancelThread",
                 daemon=True,
             )
             shutdown_thread.start()
@@ -515,9 +524,7 @@ class ThreadTaskQueue:
         with self._state_lock:
             self._results.clear()
 
-    # -- Internal: enqueue / workers -----------------------------------------
-
-    def _enqueue_entry(self, entry: _ThreadQueueEntry, *, with_new_workers: bool) -> None:
+    def _enqueue_entry(self, entry: _ProcessQueueEntry, *, with_new_workers: bool) -> None:
         with self._state_lock:
             if self._closed or not self._accepting or self.stop:
                 raise QueueClosedError("queue is not accepting new tasks")
@@ -549,7 +556,7 @@ class ThreadTaskQueue:
                 worker_thread = threading.Thread(
                     target=self._worker,
                     args=(worker_id,),
-                    name=f"TaskQueueWorker-{worker_id}",
+                    name=f"ProcessTaskQueueWorker-{worker_id}",
                     daemon=True,
                 )
                 self.worker_threads[worker_id] = worker_thread
@@ -579,11 +586,11 @@ class ThreadTaskQueue:
             with self._state_lock:
                 self.worker_threads.pop(worker_id, None)
 
-    def _execute_entry(self, entry: _ThreadQueueEntry) -> None:
+    def _execute_entry(self, entry: _ProcessQueueEntry) -> None:
         item = entry.item
         handle = entry.handle
         delay = item.retry_delay
-        running = _RunningTask(cancel_event=threading.Event())
+        running = _RunningProcess(cancel_event=threading.Event())
 
         with self._state_lock:
             self._active_tasks[handle.task_id] = running
@@ -591,15 +598,17 @@ class ThreadTaskQueue:
         try:
             while True:
                 if running.cancel_event.is_set():
-                    raise _TaskCancelled("Task execution was cancelled.")
+                    raise _ProcessTaskCancelled("Task execution was cancelled.")
 
                 handle._mark_running()
 
                 try:
                     value = self._run_item_with_controls(
-                        item=item, cancel_event=running.cancel_event
+                        item=item,
+                        cancel_event=running.cancel_event,
+                        running=running,
                     )
-                except _TaskCancelled:
+                except _ProcessTaskCancelled:
                     raise
                 except Exception as exc:
                     should_retry = (
@@ -629,7 +638,7 @@ class ThreadTaskQueue:
                         handle, _make_result(handle, status="succeeded", value=value)
                     )
                     return
-        except _TaskCancelled:
+        except _ProcessTaskCancelled:
             self._record_result(
                 handle,
                 _make_result(handle, status="cancelled", message="Task execution was cancelled."),
@@ -638,65 +647,70 @@ class ThreadTaskQueue:
             with self._state_lock:
                 self._active_tasks.pop(handle.task_id, None)
 
-    @staticmethod
-    def _invoke_item(
-        item: ThreadQueueItem,
-        result_queue: queue_module.Queue[tuple[str, Any]],
-    ) -> None:
-        try:
-            result_queue.put(("value", item()))
-        except BaseException as exc:
-            result_queue.put(("error", exc))
-
     def _run_item_with_controls(
         self,
         *,
-        item: ThreadQueueItem,
+        item: ProcessQueueItem,
         cancel_event: threading.Event,
+        running: _RunningProcess,
     ) -> Any:
-        result_queue: queue_module.Queue[tuple[str, Any]] = queue_module.Queue(maxsize=1)
-        execution_thread = threading.Thread(
-            target=self._invoke_item,
+        result_queue = self.context.Queue(maxsize=1)
+        process = self.context.Process(
+            target=_invoke_process_item,
             args=(item, result_queue),
-            name=f"TaskQueueExec-{item.task_id}",
-            daemon=True,
+            name=f"ProcessTaskQueueExec-{item.task_id}",
         )
-        execution_thread.start()
+        running.process = process
+        process.start()
         deadline = None if item.timeout is None else time.perf_counter() + item.timeout
 
-        while execution_thread.is_alive():
+        try:
+            while process.is_alive():
+                if cancel_event.is_set():
+                    self._terminate_process(process)
+                    raise _ProcessTaskCancelled("Task execution was cancelled.")
+                if deadline is not None:
+                    remaining = deadline - time.perf_counter()
+                    if remaining <= 0:
+                        self._terminate_process(process)
+                        raise TimeoutError(
+                            f"Task '{item.name}' exceeded timeout of {item.timeout} seconds."
+                        )
+                    join_timeout = min(self.poll_interval, remaining)
+                else:
+                    join_timeout = self.poll_interval
+                process.join(timeout=join_timeout)
+
             if cancel_event.is_set():
-                raise _TaskCancelled("Task execution was cancelled.")
-            if deadline is not None:
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"Task '{item.name}' exceeded timeout of {item.timeout} seconds."
-                    )
-                join_timeout = min(self.poll_interval, remaining)
-            else:
-                join_timeout = self.poll_interval
-            execution_thread.join(timeout=join_timeout)
+                raise _ProcessTaskCancelled("Task execution was cancelled.")
 
-        if cancel_event.is_set():
-            raise _TaskCancelled("Task execution was cancelled.")
+            try:
+                kind, payload = result_queue.get(timeout=self.poll_interval)
+            except queue_module.Empty:
+                if process.exitcode and process.exitcode != 0:
+                    raise RuntimeError(
+                        f"Task process exited with status {process.exitcode}."
+                    ) from None
+                raise RuntimeError("Task process exited without returning a result.") from None
 
-        kind, payload = result_queue.get_nowait()
-        if kind == "error":
-            raise payload
-        return payload
+            if kind == "error":
+                raise payload
+            return payload
+        finally:
+            process.join(timeout=0)
+            running.process = None
+            result_queue.close()
+            result_queue.join_thread()
 
     def _sleep_with_cancel(self, *, delay: float, cancel_event: threading.Event) -> None:
         deadline = time.perf_counter() + delay
         while True:
             if cancel_event.is_set():
-                raise _TaskCancelled("Task execution was cancelled.")
+                raise _ProcessTaskCancelled("Task execution was cancelled.")
             remaining = deadline - time.perf_counter()
             if remaining <= 0:
                 return
             cancel_event.wait(timeout=min(self.poll_interval, remaining))
-
-    # -- Internal: run modes -------------------------------------------------
 
     def _run_finite(self, *, timeout: float | None) -> None:
         try:
@@ -743,8 +757,6 @@ class ThreadTaskQueue:
         self._cancel_running_entries(include_must_complete=False)
         self._wait_for_queue_completion(timeout=None)
 
-    # -- Internal: cancellation ----------------------------------------------
-
     def _cancel_task(self, task_id: str) -> bool:
         with self._state_lock:
             handle = self._handles.get(task_id)
@@ -754,6 +766,8 @@ class ThreadTaskQueue:
             running = self._active_tasks.get(task_id)
             if running is not None:
                 running.cancel_event.set()
+                if running.process is not None and running.process.is_alive():
+                    self._terminate_process(running.process)
                 return True
 
         return self._cancel_pending_entries(include_must_complete=True, only_task_ids={task_id}) > 0
@@ -764,7 +778,7 @@ class ThreadTaskQueue:
         include_must_complete: bool,
         only_task_ids: set[str] | None = None,
     ) -> int:
-        retained: list[_ThreadQueueEntry] = []
+        retained: list[_ProcessQueueEntry] = []
         cancelled = 0
 
         while True:
@@ -807,16 +821,16 @@ class ThreadTaskQueue:
                 continue
             if include_must_complete or not handle.must_complete:
                 running.cancel_event.set()
+                if running.process is not None and running.process.is_alive():
+                    self._terminate_process(running.process)
 
-    # -- Internal: result recording ------------------------------------------
-
-    def _record_cancelled(self, entry: _ThreadQueueEntry, message: str) -> None:
+    def _record_cancelled(self, entry: _ProcessQueueEntry, message: str) -> None:
         handle = entry.handle
         if handle.done():
             return
         self._record_result(handle, _make_result(handle, status="cancelled", message=message))
 
-    def _record_result(self, handle: ThreadTaskHandle, result: TaskResult) -> None:
+    def _record_result(self, handle: ProcessTaskHandle, result: TaskResult) -> None:
         handle._mark_finished(result)
         with self._state_lock:
             self._results.append(result)
@@ -825,8 +839,6 @@ class ThreadTaskQueue:
                 self._on_task_complete(result)
             except Exception:
                 logger.exception("on_task_complete callback raised")
-
-    # -- Internal: worker lifecycle ------------------------------------------
 
     def _stop_workers(self) -> None:
         with self._state_lock:
@@ -838,11 +850,11 @@ class ThreadTaskQueue:
 
         for _ in range(len(workers)):
             self.queue.put(
-                _ThreadQueueEntry(
+                _ProcessQueueEntry(
                     priority=10**9,
                     sequence=next(self._counter),
-                    item=ThreadQueueItem(self._sentinel_task),
-                    handle=ThreadTaskHandle(
+                    item=ProcessQueueItem(self._sentinel_task),
+                    handle=ProcessTaskHandle(
                         task_id=f"sentinel-{next(self._counter)}",
                         name="sentinel",
                         priority=10**9,
@@ -867,6 +879,15 @@ class ThreadTaskQueue:
     @staticmethod
     def _sentinel_task() -> None:
         return None
+
+    @staticmethod
+    def _terminate_process(process: multiprocessing.Process) -> None:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=1.0)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=1.0)
 
     def _wait_for_queue_completion(self, *, timeout: float | None) -> bool:
         with self.queue.all_tasks_done:

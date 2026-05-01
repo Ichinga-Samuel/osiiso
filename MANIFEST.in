@@ -1,5 +1,0 @@
-prune build
-prune dist
-prune src/async_queue_manager.egg-info
-global-exclude __pycache__
-global-exclude *.py[cod]

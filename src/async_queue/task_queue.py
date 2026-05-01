@@ -9,36 +9,21 @@ from concurrent.futures import Future
 from dataclasses import dataclass, field
 from logging import getLogger
 from threading import Lock, get_ident
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
-from .exceptions import QueueClosedError, QueueExecutionError
+from ._base import (
+    QueueMode,
+    QueueRunSummary,
+    ShutdownPolicy,
+    TaskResult,
+    TaskStatus,
+    _make_result,
+)
+from .exceptions import QueueClosedError
 from .queue_item import QueueItem
 
 logger = getLogger(__name__)
 T = TypeVar("T")
-
-TaskStatus = Literal["pending", "running", "retrying", "succeeded", "failed", "cancelled"]
-QueueMode = Literal["finite", "infinite"]
-ShutdownPolicy = Literal["cancel", "complete_priority"]
-
-
-@dataclass(frozen=True, slots=True)
-class TaskResult:
-    """The final state of a queued task."""
-
-    task_id: str
-    name: str
-    status: Literal["succeeded", "failed", "cancelled"]
-    value: Any = None
-    exception: BaseException | None = None
-    attempts: int = 0
-    priority: int = 0
-    must_complete: bool = False
-    created_at: float = 0.0
-    started_at: float | None = None
-    finished_at: float = 0.0
-    duration: float = 0.0
-    message: str = ""
 
 
 class TaskHandle:
@@ -185,27 +170,6 @@ class _QueueEntry:
     is_sentinel: bool = field(default=False, compare=False)
 
 
-@dataclass(frozen=True, slots=True)
-class QueueRunSummary:
-    """A compact summary for a completed queue run."""
-
-    total_submitted: int
-    succeeded: int
-    failed: int
-    cancelled: int
-    timed_out: bool
-    duration: float
-    results: tuple[TaskResult, ...]
-
-    @property
-    def errors(self) -> tuple[TaskResult, ...]:
-        return tuple(result for result in self.results if result.status == "failed")
-
-    def raise_for_errors(self) -> None:
-        if self.errors:
-            raise QueueExecutionError(list(self.errors))
-
-
 class TaskQueue:
     """A small asyncio task queue with priorities, retries, and graceful shutdown."""
 
@@ -222,6 +186,7 @@ class TaskQueue:
         mode: QueueMode = "finite",
         raise_on_error: bool = False,
         auto_worker_limit: int | None = None,
+        on_task_complete: Callable[[TaskResult], Any] | None = None,
     ) -> None:
         if size < 0:
             raise ValueError("size must be greater than or equal to 0")
@@ -241,6 +206,7 @@ class TaskQueue:
         self.on_exit = on_exit
         self.mode = mode
         self.raise_on_error = raise_on_error
+        self._on_task_complete = on_task_complete
 
         self.worker_tasks: dict[int, asyncio.Task[None]] = {}
         self.queue_cancelled = False
@@ -261,6 +227,8 @@ class TaskQueue:
         self._shutdown_event: asyncio.Event | None = None
         self._loop_thread_id: int | None = None
         self._lifecycle_lock = Lock()
+
+    # -- Public properties ---------------------------------------------------
 
     @property
     def active_count(self) -> int:
@@ -287,6 +255,8 @@ class TaskQueue:
             "workers": len(self.worker_tasks),
             "closed": self.closed,
         }
+
+    # -- Task submission -----------------------------------------------------
 
     def add_task(
         self,
@@ -354,45 +324,23 @@ class TaskQueue:
         backoff: float = 1.0,
         name: str | None = None,
     ) -> list[TaskHandle]:
+        opts = dict(
+            must_complete=must_complete,
+            priority=priority,
+            timeout=timeout,
+            retries=retries,
+            retry_delay=retry_delay,
+            backoff=backoff,
+            name=name,
+        )
         handles: list[TaskHandle] = []
         for entry in iterable:
             if isinstance(entry, Mapping):
-                handle = self.submit(
-                    task,
-                    must_complete=must_complete,
-                    priority=priority,
-                    timeout=timeout,
-                    retries=retries,
-                    retry_delay=retry_delay,
-                    backoff=backoff,
-                    name=name,
-                    **dict(entry),
-                )
+                handles.append(self.add(item=QueueItem(task, **entry), **opts))
             elif isinstance(entry, tuple):
-                handle = self.submit(
-                    task,
-                    *entry,
-                    must_complete=must_complete,
-                    priority=priority,
-                    timeout=timeout,
-                    retries=retries,
-                    retry_delay=retry_delay,
-                    backoff=backoff,
-                    name=name,
-                )
+                handles.append(self.submit(task, *entry, **opts))
             else:
-                handle = self.submit(
-                    task,
-                    entry,
-                    must_complete=must_complete,
-                    priority=priority,
-                    timeout=timeout,
-                    retries=retries,
-                    retry_delay=retry_delay,
-                    backoff=backoff,
-                    name=name,
-                )
-            handles.append(handle)
+                handles.append(self.submit(task, entry, **opts))
         return handles
 
     def add(
@@ -441,6 +389,8 @@ class TaskQueue:
         )
         return handle
 
+    # -- Lifecycle -----------------------------------------------------------
+
     async def start(self) -> TaskQueue:
         if self._closed:
             raise QueueClosedError("queue has already been shut down")
@@ -487,8 +437,8 @@ class TaskQueue:
             else:
                 await self._run_infinite(timeout=timeout)
         finally:
-            summary = self._build_summary(
-                results=self._results[result_index:],
+            summary = QueueRunSummary.from_results(
+                self._results[result_index:],
                 run_start=run_start,
                 timed_out=self._timed_out,
             )
@@ -543,8 +493,43 @@ class TaskQueue:
             return None
         return running_loop.create_task(self.shutdown(cancel_pending=True))
 
-    def cancel_all_workers(self) -> asyncio.Task[None] | None:
-        return self.cancel()
+    def reset(self) -> None:
+        """Reset queue state for reuse after ``run()`` or ``shutdown()``."""
+        if self._run_in_progress:
+            raise RuntimeError("cannot reset while a run is in progress")
+        self._results.clear()
+        self._handles.clear()
+        self._closed = False
+        self._accepting = True
+        self._started = False
+        self.stop = False
+        self.queue_cancelled = False
+        self._timed_out = False
+        self._counter = itertools.count()
+        self._worker_ids = itertools.count(1)
+        self._loop = None
+        self._loop_thread_id = None
+        self._shutdown_event = None
+
+    def clear_results(self) -> None:
+        """Discard accumulated results to free memory."""
+        self._results.clear()
+
+    # -- Result streaming ----------------------------------------------------
+
+    @staticmethod
+    async def as_completed(
+        handles: Iterable[TaskHandle],
+    ):
+        """Yield handles as they finish, fastest first."""
+        tasks = {asyncio.ensure_future(h.wait()): h for h in handles}
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for fut in done:
+                yield tasks[fut]
+
+    # -- Internal: loop binding ----------------------------------------------
 
     def _bind_loop(self) -> None:
         loop = asyncio.get_running_loop()
@@ -559,7 +544,6 @@ class TaskQueue:
             self._loop_thread_id = get_ident()
 
     def _bind_handle(self, handle: TaskHandle) -> None:
-        _ = handle
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -584,6 +568,8 @@ class TaskQueue:
 
         loop.call_soon_threadsafe(invoke)
         return waiter.result()
+
+    # -- Internal: enqueue / workers -----------------------------------------
 
     def _enqueue_entry(self, entry: _QueueEntry, *, with_new_workers: bool) -> None:
         with self._lifecycle_lock:
@@ -644,7 +630,6 @@ class TaskQueue:
 
         while True:
             handle._mark_running()
-            started_at = handle._started_at or time.perf_counter()
             execution = asyncio.create_task(item(), name=f"TaskQueueTask-{handle.task_id}")
             self._active_tasks[handle.task_id] = execution
 
@@ -653,29 +638,13 @@ class TaskQueue:
                     value = await execution
                 else:
                     value = await asyncio.wait_for(execution, timeout=item.timeout)
-            except asyncio.CancelledError as exc:
-                finished_at = time.perf_counter()
+            except asyncio.CancelledError:
                 self._record_result(
-                    handle,
-                    TaskResult(
-                        task_id=handle.task_id,
-                        name=handle.name,
-                        status="cancelled",
-                        exception=exc,
-                        attempts=handle.attempts,
-                        priority=handle.priority,
-                        must_complete=handle.must_complete,
-                        created_at=handle.created_at,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration=finished_at - started_at,
-                        message="Task execution was cancelled.",
-                    ),
+                    handle, _make_result(handle, status="cancelled", message="Task was cancelled.")
                 )
                 return
             except Exception as exc:
-                should_retry = handle.attempts <= item.retries
-                if should_retry:
+                if handle.attempts <= item.retries:
                     handle._mark_retrying()
                     if delay > 0:
                         await asyncio.sleep(delay)
@@ -687,46 +656,20 @@ class TaskQueue:
                 if not isinstance(exc, asyncio.TimeoutError):
                     logger.exception("Task %s failed", handle.name)
 
-                finished_at = time.perf_counter()
                 self._record_result(
                     handle,
-                    TaskResult(
-                        task_id=handle.task_id,
-                        name=handle.name,
-                        status="failed",
-                        exception=exc,
-                        attempts=handle.attempts,
-                        priority=handle.priority,
-                        must_complete=handle.must_complete,
-                        created_at=handle.created_at,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration=finished_at - started_at,
-                        message=str(exc),
-                    ),
+                    _make_result(handle, status="failed", exception=exc, message=str(exc)),
                 )
                 return
             else:
-                finished_at = time.perf_counter()
                 self._record_result(
-                    handle,
-                    TaskResult(
-                        task_id=handle.task_id,
-                        name=handle.name,
-                        status="succeeded",
-                        value=value,
-                        attempts=handle.attempts,
-                        priority=handle.priority,
-                        must_complete=handle.must_complete,
-                        created_at=handle.created_at,
-                        started_at=started_at,
-                        finished_at=finished_at,
-                        duration=finished_at - started_at,
-                    ),
+                    handle, _make_result(handle, status="succeeded", value=value)
                 )
                 return
             finally:
                 self._active_tasks.pop(handle.task_id, None)
+
+    # -- Internal: run modes -------------------------------------------------
 
     async def _run_finite(self, *, timeout: float | None) -> None:
         try:
@@ -772,6 +715,8 @@ class TaskQueue:
         self._cancel_pending_entries(include_must_complete=False)
         self._cancel_running_entries(include_must_complete=False)
         await self.queue.join()
+
+    # -- Internal: cancellation ----------------------------------------------
 
     def _cancel_task(self, task_id: str) -> bool:
         return self._call_in_queue_loop(self._cancel_task_local, task_id)
@@ -835,33 +780,24 @@ class TaskQueue:
             if include_must_complete or not handle.must_complete:
                 execution.cancel()
 
+    # -- Internal: result recording ------------------------------------------
+
     def _record_cancelled(self, entry: _QueueEntry, message: str) -> None:
         handle = entry.handle
         if handle.done():
             return
-
-        finished_at = time.perf_counter()
-        duration = 0.0 if handle._started_at is None else finished_at - handle._started_at
-        self._record_result(
-            handle,
-            TaskResult(
-                task_id=handle.task_id,
-                name=handle.name,
-                status="cancelled",
-                attempts=handle.attempts,
-                priority=handle.priority,
-                must_complete=handle.must_complete,
-                created_at=handle.created_at,
-                started_at=handle._started_at,
-                finished_at=finished_at,
-                duration=duration,
-                message=message,
-            ),
-        )
+        self._record_result(handle, _make_result(handle, status="cancelled", message=message))
 
     def _record_result(self, handle: TaskHandle, result: TaskResult) -> None:
         handle._mark_finished(result)
         self._results.append(result)
+        if self._on_task_complete is not None:
+            try:
+                self._on_task_complete(result)
+            except Exception:
+                logger.exception("on_task_complete callback raised")
+
+    # -- Internal: worker lifecycle ------------------------------------------
 
     async def _stop_workers(self) -> None:
         if not self.worker_tasks:
@@ -893,24 +829,3 @@ class TaskQueue:
 
     async def _sentinel_task(self) -> None:
         return None
-
-    def _build_summary(
-        self,
-        *,
-        results: list[TaskResult],
-        run_start: float,
-        timed_out: bool,
-    ) -> QueueRunSummary:
-        summary_results = tuple(results)
-        succeeded = sum(1 for result in summary_results if result.status == "succeeded")
-        failed = sum(1 for result in summary_results if result.status == "failed")
-        cancelled = sum(1 for result in summary_results if result.status == "cancelled")
-        return QueueRunSummary(
-            total_submitted=len(summary_results),
-            succeeded=succeeded,
-            failed=failed,
-            cancelled=cancelled,
-            timed_out=timed_out,
-            duration=time.perf_counter() - run_start,
-            results=summary_results,
-        )

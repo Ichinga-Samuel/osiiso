@@ -1,4 +1,9 @@
 from async_queue import (
+    ProcessQueueItem,
+    ProcessQueueRunSummary,
+    ProcessTaskHandle,
+    ProcessTaskQueue,
+    ProcessTaskResult,
     QueueClosedError,
     QueueExecutionError,
     QueueItem,
@@ -15,6 +20,11 @@ from async_queue import (
 )
 
 __all__ = [
+    "ProcessQueueItem",
+    "ProcessQueueRunSummary",
+    "ProcessTaskHandle",
+    "ProcessTaskQueue",
+    "ProcessTaskResult",
     "QueueClosedError",
     "QueueExecutionError",
     "QueueItem",
