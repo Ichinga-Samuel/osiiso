@@ -3,17 +3,27 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "async-queue-manager"
-version = "0.2.0"
-description = "A small, production-ready asyncio task queue with priorities, retries, results, and graceful shutdown."
+name = "taskqueue"
+version = "1.0.0"
+description = "Structured concurrency and parallelism for asyncio, threading, and multiprocessing using queues."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Ichinga Samuel", email = "ichingasamuel@gmail.com"}]
-keywords = ["asyncio", "concurrency", "priority-queue", "queue", "task-queue"]
+keywords = [
+    "asyncio",
+    "concurrency",
+    "multiprocessing",
+    "parallelism",
+    "priority-queue",
+    "queue",
+    "structured-concurrency",
+    "task-queue",
+    "threading",
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
@@ -28,6 +38,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
+uvloop = ["uvloop>=0.19"]
 dev = [
     "build>=1.2.2",
     "coverage[toml]>=7.10.5",
@@ -49,10 +60,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["taskqueue*"]
 
 [tool.setuptools.package-data]
-async_queue = ["py.typed"]
-async_queue_manager = ["py.typed"]
+taskqueue = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
@@ -61,7 +72,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["async_queue", "async_queue_manager"]
+source = ["taskqueue"]
 
 [tool.coverage.report]
 show_missing = true
