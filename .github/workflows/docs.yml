@@ -3,9 +3,7 @@ name: Docs
 on:
   push:
     branches:
-      - main
       - master
-      - dev
     paths:
       - "docs/**"
       - "mkdocs.yml"

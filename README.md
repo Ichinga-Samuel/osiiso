@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/osiiso-banner.png" alt="osiiso structured task queue banner" width="100%">
+  <img src="assets/osiiso-banner.png" alt="osiiso structured task queue banner" width="100%">
 </p>
 
 # osiiso
