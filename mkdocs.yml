@@ -1,0 +1,25 @@
+site_name: osiiso
+site_description: Structured queues for asyncio, threading, and multiprocessing.
+site_url: https://ichinga-samuel.github.io/osiiso/
+repo_url: https://github.com/Ichinga-Samuel/osiiso
+repo_name: Ichinga-Samuel/osiiso
+theme:
+  name: readthedocs
+  highlightjs: true
+nav:
+  - Home: index.md
+  - Quick Start: guides/quick-start.md
+  - Queue Guide: guides/queues.md
+  - Task Options: guides/task-options.md
+  - Groups and Handles: guides/groups-and-handles.md
+  - Lifecycle and Policies: guides/lifecycle-and-policies.md
+  - Examples:
+      - Hacker News Showcase: examples/hacker-news-showcase.md
+      - Feature Gallery: examples/feature-gallery.md
+  - API Reference: reference/api.md
+  - GitHub Pages: github-pages.md
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true

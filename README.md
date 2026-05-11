@@ -1,302 +1,443 @@
-# taskqueue
+<p align="center">
+  <img src="docs/assets/osiiso-banner.png" alt="osiiso structured task queue banner" width="100%">
+</p>
 
-Structured concurrency and parallelism for Python — using **asyncio**, **threading**, and **multiprocessing** through a unified, compact queue API.
+# osiiso
 
-```python
-import taskqueue
+Structured task queues for Python across `asyncio`, threads, and processes.
 
-async def main():
-    async with taskqueue.TaskQueue(workers=4) as q:
-        q.submit(fetch, "https://a.com", retries=3)
-        q.submit(fetch, "https://b.com", retries=3)
-        summary = await q.run()
-        print(summary.values)
+<p>
+  <a href="https://github.com/Ichinga-Samuel/osiiso/actions/workflows/action.yml"><img alt="CI" src="https://github.com/Ichinga-Samuel/osiiso/actions/workflows/action.yml/badge.svg"></a>
+  <a href="https://github.com/Ichinga-Samuel/osiiso/actions/workflows/docs.yml"><img alt="Docs" src="https://github.com/Ichinga-Samuel/osiiso/actions/workflows/docs.yml/badge.svg"></a>
+  <img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Typed package" src="https://img.shields.io/badge/typed-py.typed-blue">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green.svg"></a>
+</p>
 
-taskqueue.run(main())  # uses uvloop if installed
-```
+`osiiso` gives you one compact queue API for three execution backends:
 
-## Features
+- `AsyncQueue` for coroutine-heavy I/O and async integrations.
+- `ThreadQueue` for blocking I/O, synchronous SDKs, filesystem work, and SQLite writes.
+- `ProcessQueue` for CPU-heavy work that benefits from separate subprocesses.
 
-- **Three execution backends** — `TaskQueue` (asyncio), `ThreadTaskQueue` (threads), `ProcessTaskQueue` (processes)
-- **Priority scheduling** — tasks execute in priority order
-- **Automatic retries** — with configurable delay and exponential backoff
-- **Per-task timeouts** and global queue timeouts
-- **Graceful shutdown** — with must-complete task protection
-- **`TaskOptions`** — reusable config bundles to eliminate verbose kwargs
-- **`@q.task()` decorator** — bind functions to a queue with preset options
-- **Event hooks** — `on_task_start`, `on_task_complete`, `on_task_retry`
-- **`taskqueue.run()`** — auto-detects and uses uvloop when available
-- **Fully typed** — ships with `py.typed` and complete type annotations
+It is dependency-free at runtime, typed with `py.typed`, and built around a predictable workflow: submit tasks, apply options, run the queue, then inspect handles and a `RunSummary`.
+
+## Contents
+
+- [Why osiiso](#why-osiiso)
+- [Installation](#installation)
+- [Choose a queue](#choose-a-queue)
+- [Quick start](#quick-start)
+- [Core concepts](#core-concepts)
+- [Task options](#task-options)
+- [Results and errors](#results-and-errors)
+- [Examples](#examples)
+- [Documentation](#documentation)
+- [Development](#development)
+- [Community](#community)
+
+## Why osiiso
+
+- Shared API across async, thread, and process execution.
+- Priority scheduling where lower priority numbers run first.
+- Retries with optional delay and exponential backoff.
+- Per-task timeouts and queue-level run timeouts.
+- Graceful shutdown with `must_complete` task protection.
+- Batch workflows with `submit()`, `map()`, and `group()`.
+- Awaitable async handles and blocking sync handles.
+- Structured `RunSummary` and immutable `TaskResult` records.
+- Lifecycle hooks for `on_start`, `on_complete`, and `on_retry`.
+- Optional `uvloop` integration through `osiiso.run()`.
 
 ## Installation
 
 ```bash
-pip install taskqueue
-
-# With uvloop support (Linux/macOS):
-pip install taskqueue[uvloop]
+pip install osiiso
 ```
 
-## Quick Start
+With optional `uvloop` support:
 
-### Asyncio
+```bash
+pip install "osiiso[uvloop]"
+```
+
+The project targets Python 3.13 and newer.
+
+## Choose a queue
+
+| Workload | Queue | Good for |
+| --- | --- | --- |
+| Coroutine-based I/O | `AsyncQueue` | HTTP clients, async databases, websockets, API fan-out |
+| Blocking synchronous work | `ThreadQueue` | File operations, blocking SDKs, SQLite writes, sync integrations |
+| CPU-heavy functions | `ProcessQueue` | Ranking, parsing, scoring, transformations, analytics |
+
+The queues intentionally look similar, so work can move between execution models with minimal changes.
+
+## Quick start
 
 ```python
 import asyncio
-import taskqueue
+import osiiso
 
-async def fetch(url):
-    await asyncio.sleep(0.1)  # simulate I/O
-    return f"fetched {url}"
+
+async def fetch(name: str) -> str:
+    await asyncio.sleep(0.1)
+    return f"fetched {name}"
+
 
 async def main():
-    async with taskqueue.TaskQueue(workers=4) as q:
-        q.submit(fetch, "https://a.com")
-        q.submit(fetch, "https://b.com")
-        summary = await q.run()
+    async with osiiso.AsyncQueue(workers=4) as q:
+        q.submit(fetch, "users", priority=0)
+        q.submit(fetch, "posts", retries=2, retry_delay=0.25, timeout=5)
 
-    print(summary.values)   # ('fetched https://a.com', 'fetched https://b.com')
-    print(summary.ok)       # True
+        summary = await q.run(strict=True)
+        return summary.values
 
-taskqueue.run(main())
+
+print(osiiso.run(main()))
 ```
 
-### Threading
+## Core concepts
+
+### `submit()`
+
+Use `submit()` for one task. It returns a handle immediately.
 
 ```python
-import taskqueue
+handle = q.submit(fetch_user, "ada", retries=3, timeout=10, name="fetch-user")
+```
+
+Async handles are awaitable:
+
+```python
+result = await handle
+value = handle.value()
+```
+
+Thread and process handles are blocking:
+
+```python
+result = handle.wait(timeout=5)
+value = handle.value()
+```
+
+### `map()`
+
+Use `map()` for one callable over many inputs.
+
+```python
+q.map(download, urls, retries=2, group_id="downloads")
+q.map(add, [(1, 2), (3, 4), (5, 6)], name="add")
+q.map(request, [{"method": "GET", "url": "https://example.com"}])
+```
+
+Tuple entries are unpacked as positional arguments. Mapping entries are passed as keyword arguments.
+
+### `group()`
+
+Use `group()` for a named batch, especially when tasks have different callables.
+
+```python
+group = q.group(
+    [
+        (extract, "db"),
+        (transform, raw_records),
+        (load, destination),
+    ],
+    group_id="etl-batch-1",
+)
+
+summary = q.run()
+values = group.values()
+```
+
+For `AsyncQueue`, use `await group.wait()` and `await group.values()`.
+
+### Bound tasks
+
+Bind a callable to a queue with `@q.task()`.
+
+```python
+async with osiiso.AsyncQueue(workers=4) as q:
+    @q.task(retries=2, retry_delay=0.25, name="fetch")
+    async def fetch(url: str) -> str:
+        return await client.get(url)
+
+    fetch("https://example.com")
+    fetch.map(["https://example.org", "https://example.net"])
+
+    summary = await q.run(strict=True)
+```
+
+## Queue examples
+
+### AsyncQueue
+
+```python
+import asyncio
+import osiiso
+
+
+async def fetch(name: str) -> str:
+    await asyncio.sleep(0.1)
+    return f"fetched {name}"
+
+
+async def main():
+    async with osiiso.AsyncQueue(workers=4) as q:
+        q.map(fetch, ["users", "posts", "comments"], retries=2, timeout=5)
+        summary = await q.run(strict=True)
+        print(summary.values)
+
+
+osiiso.run(main())
+```
+
+### ThreadQueue
+
+```python
 import time
+import osiiso
 
-def process(data):
+
+def resize(path: str) -> str:
     time.sleep(0.1)
-    return data.upper()
+    return f"resized {path}"
 
-with taskqueue.ThreadTaskQueue(workers=4) as q:
-    q.map(process, ["hello", "world", "foo"])
-    summary = q.run()
 
-print(summary.values)  # ('HELLO', 'WORLD', 'FOO')
-```
-
-### Multiprocessing
-
-```python
-import taskqueue
-
-def cpu_work(n):
-    return sum(range(n))
-
-with taskqueue.ProcessTaskQueue(workers=4) as q:
-    q.map(cpu_work, [10**6, 10**7, 10**8])
-    summary = q.run()
+with osiiso.ThreadQueue(workers=4) as q:
+    q.map(resize, ["a.png", "b.png", "c.png"], name="resize")
+    summary = q.run(strict=True)
 
 print(summary.values)
 ```
 
-## API Reference
+### ProcessQueue
 
-### TaskOptions
-
-Reusable, immutable configuration bundle. Pass as `opts=` or use inline kwargs.
+Keep process tasks importable and pickleable. Top-level functions and plain data arguments are the safest choice.
 
 ```python
-from taskqueue import TaskOptions
+import osiiso
 
-# Create reusable options
-retry_opts = TaskOptions(retries=3, retry_delay=1.0, backoff=2.0, timeout=30)
 
-# Use them
-q.submit(fetch, url, opts=retry_opts)
+def score(n: int) -> int:
+    return sum(i * i for i in range(n))
 
-# Or inline — same effect:
-q.submit(fetch, url, retries=3, retry_delay=1.0, backoff=2.0, timeout=30)
 
-# Derive new options from existing ones:
-urgent = retry_opts.replace(priority=1)
+if __name__ == "__main__":
+    with osiiso.ProcessQueue(workers=4) as q:
+        q.map(score, [10_000, 20_000, 30_000], name="score")
+        summary = q.run(strict=True)
+
+    print(summary.values)
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `priority` | `int` | `3` | Lower = higher priority |
-| `must_complete` | `bool` | `False` | Protected from cancellation during shutdown |
-| `timeout` | `float \| None` | `None` | Per-task timeout in seconds |
-| `retries` | `int` | `0` | Max retry attempts after failure |
-| `retry_delay` | `float` | `0.0` | Delay before first retry (seconds) |
-| `backoff` | `float` | `1.0` | Multiplier applied to retry_delay after each retry |
-| `delay` | `float \| None` | `None` | Delay before execution starts |
-| `run_at` | `float \| None` | `None` | Absolute time (epoch) to start execution |
-| `name` | `str \| None` | `None` | Custom task name (auto-detected from function) |
-| `group_id` | `str \| None` | `None` | Group identifier |
-| `detached` | `bool` | `False` | Fire-and-forget mode |
+## Task options
 
-### Queue Constructors
-
-All three queue types share these constructor parameters:
+Task behavior can be configured inline or through an immutable `TaskOptions` object.
 
 ```python
-TaskQueue(
-    workers=None,        # Max concurrent workers (auto-scaled if None)
-    size=0,              # Queue capacity (0 = unbounded)
-    timeout=None,        # Default run() timeout
-    mode="finite",       # "finite" (drain & stop) or "infinite" (run until shutdown)
-    fail_policy="continue",   # "continue" or "fail_first"
-    on_exit="complete_priority",  # "cancel" or "complete_priority"
-    on_task_start=None,       # Callback(handle)
-    on_task_complete=None,    # Callback(result)
-    on_task_retry=None,       # Callback(handle, exception)
+from osiiso import TaskOptions
+
+
+retrying = TaskOptions(retries=3, retry_delay=0.5, backoff=2, timeout=10)
+urgent = retrying.replace(priority=0, name="urgent-api-call")
+
+q.submit(fetch, url, opts=urgent)
+q.submit(fetch, other_url, retries=3, retry_delay=0.5, backoff=2)
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `priority` | `3` | Lower numbers run first. |
+| `must_complete` | `False` | Protects a task during graceful shutdown. |
+| `timeout` | `None` | Per-task timeout in seconds. |
+| `retries` | `0` | Retry attempts after the first failure. |
+| `retry_delay` | `0.0` | Delay before the first retry. |
+| `backoff` | `1.0` | Multiplier applied after each retry. |
+| `delay` | `None` | Run after this many seconds. |
+| `run_at` | `None` | Run at an absolute epoch timestamp. |
+| `name` | `None` | Custom result and hook name. |
+| `group_id` | `None` | Group label for summaries. |
+| `detached` | `False` | Metadata flag for fire-and-forget style tasks. |
+
+`TaskOptions` validates invalid combinations immediately. For example, `delay` and `run_at` are mutually exclusive, negative retries are rejected, and unknown submit options raise `TypeError`.
+
+## Results and errors
+
+Every `run()` returns a `RunSummary`.
+
+```python
+summary.ok
+summary.succeeded
+summary.failed
+summary.cancelled
+summary.timed_out
+summary.values
+summary.errors
+summary.by_task_id()
+summary.by_name()
+summary.by_group()
+summary.raise_for_errors()
+summary.display()
+```
+
+Use `strict=True` when failures should raise `ExecutionError` after the run finishes:
+
+```python
+summary = await q.run(strict=True)
+```
+
+Each task result is stored as a `TaskResult` with task id, name, status, value, exception, attempts, priority, timing, group id, and cancellation metadata.
+
+## Lifecycle and policies
+
+Queues support finite and long-running modes:
+
+```python
+q = osiiso.AsyncQueue(mode="finite", fail_policy="continue", on_exit="complete_priority")
+```
+
+- `mode="finite"` runs pending work and exits.
+- `mode="infinite"` keeps workers alive until shutdown or timeout.
+- `fail_policy="continue"` records failures and keeps processing.
+- `fail_policy="fail_first"` cancels remaining eligible work after the first failure.
+- `on_exit="complete_priority"` lets `must_complete` tasks finish during graceful shutdown.
+- `on_exit="cancel"` cancels eligible pending and active work on timeout or forced shutdown.
+
+Hooks give you a simple integration point for logging, metrics, and tracing:
+
+```python
+def completed(result: osiiso.TaskResult) -> None:
+    print(result.name, result.status, result.duration)
+
+
+q = osiiso.ThreadQueue(on_complete=completed)
+```
+
+## Examples
+
+Run the compact feature gallery:
+
+```bash
+uv run python examples/feature_gallery.py
+```
+
+Run the complete Hacker News style showcase:
+
+```bash
+uv run python -m examples.hackernews_showcase --limit 6
+```
+
+Use the live Hacker News API:
+
+```bash
+uv run python -m examples.hackernews_showcase --limit 20 --online
+```
+
+The showcase uses all three backends:
+
+- `AsyncQueue` fetches feeds, items, and users.
+- `ThreadQueue` persists records into SQLite.
+- `ProcessQueue` ranks stories and computes keywords.
+
+## Documentation
+
+The MkDocs documentation lives in [`docs/`](docs/index.md).
+
+Run the docs locally:
+
+```bash
+python -m pip install -e ".[docs]"
+mkdocs serve
+```
+
+Build the docs strictly:
+
+```bash
+mkdocs build --strict
+```
+
+Project docs are configured for GitHub Pages at:
+
+```text
+https://ichinga-samuel.github.io/osiiso/
+```
+
+## Development
+
+Install the development dependencies:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+Run tests:
+
+```bash
+uv run pytest
+```
+
+Run Ruff:
+
+```bash
+uv run ruff check .
+```
+
+Build the package:
+
+```bash
+python -m build
+```
+
+Build the docs with the docs extra:
+
+```bash
+uv run --extra docs mkdocs build --strict
+```
+
+## Community
+
+- Read the [contribution guide](CONTRIBUTING.md) before opening larger pull requests.
+- Check the [changelog](CHANGELOG.md) for release history and upcoming changes.
+- Use [support guidance](SUPPORT.md) for questions, bug reports, and feature requests.
+- Report vulnerabilities through the [security policy](SECURITY.md), not public issues.
+- Follow the [code of conduct](CODE_OF_CONDUCT.md) when participating in project spaces.
+
+## Project layout
+
+```text
+.
+|-- src/osiiso/                  # Library source
+|-- tests/                       # Unit tests for async, thread, process, and options behavior
+|-- docs/                        # MkDocs documentation
+|-- examples/feature_gallery.py  # Compact API showcase
+|-- examples/hackernews_showcase # Complete multi-backend example project
+|-- pyproject.toml               # Package metadata and tool configuration
+`-- mkdocs.yml                   # Documentation site configuration
+```
+
+## Public API
+
+```python
+from osiiso import (
+    AsyncQueue,
+    ThreadQueue,
+    ProcessQueue,
+    TaskOptions,
+    TaskHandle,
+    SyncTaskHandle,
+    TaskGroup,
+    SyncTaskGroup,
+    TaskResult,
+    RunSummary,
+    ExecutionError,
+    ClosedError,
+    OsiisoError,
+    run,
 )
-```
-
-`ThreadTaskQueue` and `ProcessTaskQueue` additionally accept `poll_interval` (default `0.05`).
-`ProcessTaskQueue` additionally accepts `context` for multiprocessing context.
-
-### Submit Methods
-
-```python
-# Single task
-handle = q.submit(fn, arg1, arg2, retries=3)
-
-# Map over iterable
-handles = q.map(fn, [1, 2, 3], opts=retry_opts)
-
-# Group (returns a group handle)
-group = q.group(fn, [1, 2, 3], group_id="batch-1")
-```
-
-For task keyword arguments, use `functools.partial`:
-
-```python
-from functools import partial
-q.submit(partial(fetch, headers={"Auth": "token"}), url)
-```
-
-### Handles
-
-**`TaskHandle`** (async) — returned by `TaskQueue.submit()`:
-```python
-result = await handle          # await completion
-result = await handle.wait()   # same, explicit
-handle.value()                 # return value or raise
-handle.cancel()                # request cancellation
-handle.done()                  # check completion
-handle.status                  # "pending" | "running" | "retrying" | "succeeded" | "failed" | "cancelled"
-```
-
-**`SyncTaskHandle`** (blocking) — returned by `ThreadTaskQueue.submit()` and `ProcessTaskQueue.submit()`:
-```python
-result = handle.wait()         # block until complete
-result = handle.wait(timeout=5)
-handle.value()
-handle.cancel()
-```
-
-### Groups
-
-```python
-# Async
-group = q.group(fn, items)
-summary = await group.wait()
-values = await group.values()  # raises on errors
-group.cancel()
-
-# Sync (thread/process)
-summary = group.wait(timeout=30)
-values = group.values()
-```
-
-### Lifecycle
-
-```python
-# Context manager (recommended)
-async with TaskQueue(workers=4) as q:
-    q.submit(work, 1)
-    summary = await q.run()
-
-# Manual lifecycle
-q = TaskQueue(workers=4)
-await q.start()
-q.submit(work, 1)
-summary = await q.run()
-await q.shutdown()
-
-# Reset for reuse
-q.reset()
-```
-
-### `@q.task()` Decorator
-
-Bind a function to a queue with preset options:
-
-```python
-q = TaskQueue(workers=4)
-
-@q.task(retries=3, timeout=10)
-async def fetch(url):
-    ...
-
-# Submit single task
-handle = fetch("https://example.com")
-
-# Map over iterable
-handles = fetch.map(["url1", "url2", "url3"])
-
-# Group
-group = fetch.group(["url1", "url2"])
-
-# Override options at call time
-handle = fetch("url", priority=1)
-```
-
-### `taskqueue.run()`
-
-Convenience runner with automatic uvloop detection:
-
-```python
-import taskqueue
-
-# Auto-detect uvloop (use if installed, fallback to stdlib)
-result = taskqueue.run(main())
-
-# Force uvloop (raises ImportError if not installed)
-result = taskqueue.run(main(), use_uvloop=True)
-
-# Force stdlib asyncio
-result = taskqueue.run(main(), use_uvloop=False)
-```
-
-### Event Hooks
-
-```python
-q = TaskQueue(
-    workers=4,
-    on_task_start=lambda handle: print(f"▶ {handle.name}"),
-    on_task_complete=lambda result: print(f"✓ {result.name}: {result.status}"),
-    on_task_retry=lambda handle, exc: print(f"⟳ {handle.name}: {exc}"),
-)
-```
-
-### QueueRunSummary
-
-Returned by `q.run()`:
-
-```python
-summary = await q.run()
-
-summary.ok              # True if no failures/cancellations/timeouts
-summary.succeeded       # count
-summary.failed          # count
-summary.cancelled       # count
-summary.timed_out       # bool
-summary.duration        # seconds
-summary.values          # tuple of successful return values
-summary.errors          # tuple of failed TaskResults
-
-summary.by_name()       # dict[name, tuple[TaskResult, ...]]
-summary.by_group()      # dict[group_id, tuple[TaskResult, ...]]
-summary.by_task_id()    # dict[task_id, TaskResult]
-summary.raise_for_errors()  # raises QueueExecutionError if any failures
 ```
 
 ## License
 
-MIT
+`osiiso` is released under the [MIT License](LICENSE).

@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible problem in osiiso.
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please include a minimal reproduction so the issue can be verified quickly.
+  - type: input
+    id: version
+    attributes:
+      label: osiiso version or commit
+      placeholder: "1.0.0 or commit hash"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.13.8"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11, macOS 15, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Queue backend
+      options:
+        - AsyncQueue
+        - ThreadQueue
+        - ProcessQueue
+        - Multiple backends
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Paste the smallest complete example that reproduces the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Include logs, traceback, timing details, or related issues.

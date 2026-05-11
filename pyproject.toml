@@ -3,11 +3,11 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "taskqueue"
-version = "1.0.0"
+name = "osiiso"
+version = "0.0.1a1"
 description = "Structured concurrency and parallelism for asyncio, threading, and multiprocessing using queues."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Ichinga Samuel", email = "ichingasamuel@gmail.com"}]
@@ -29,9 +29,6 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
@@ -39,18 +36,22 @@ dependencies = []
 
 [project.optional-dependencies]
 uvloop = ["uvloop>=0.19"]
+docs = [
+    "mkdocs>=1.6.1",
+]
 dev = [
     "build>=1.2.2",
     "coverage[toml]>=7.10.5",
+    "mkdocs>=1.6.1",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "ruff>=0.12.10",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Ichinga-Samuel/taskqueue"
-Repository = "https://github.com/Ichinga-Samuel/taskqueue"
-Issues = "https://github.com/Ichinga-Samuel/taskqueue/issues"
+Homepage = "https://github.com/Ichinga-Samuel/osiiso"
+Repository = "https://github.com/Ichinga-Samuel/osiiso"
+Issues = "https://github.com/Ichinga-Samuel/osiiso/issues"
 
 [tool.setuptools]
 include-package-data = true
@@ -60,10 +61,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["taskqueue*"]
+include = ["osiiso*"]
 
 [tool.setuptools.package-data]
-taskqueue = ["py.typed"]
+osiiso = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"
@@ -72,15 +73,27 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["taskqueue"]
+source = ["osiiso"]
 
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
 
 [tool.ruff]
-line-length = 100
-target-version = "py310"
+line-length = 135
+target-version = "py313"
+extend-exclude = ["test project"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.10",
+]
