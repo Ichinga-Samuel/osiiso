@@ -13,6 +13,7 @@ import itertools
 import multiprocessing
 import os
 import queue as queue_mod
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
@@ -52,6 +53,53 @@ def _invoke(item: ProcessItem, result_queue: Any) -> None:
             result_queue.put(("error", exc))
         except BaseException:
             result_queue.put(("error", RuntimeError(f"{type(exc).__name__}: {exc}")))
+
+
+def _no_main_reimport():
+    """Prevent spawned subprocesses from re-importing ``__main__``.
+
+    On Windows (and any platform using the ``spawn`` start method),
+    :mod:`multiprocessing` re-executes the calling script in each child
+    process so that module-level objects are available for unpickling.
+    If the calling script has heavy imports, global side-effects, or
+    triggers its own multiprocessing usage at import time, this
+    re-execution can hang or crash the child.
+
+    Since :func:`_invoke` and :class:`~osiiso.items.ProcessItem` are
+    defined in osiiso's own importable package — not in ``__main__`` —
+    the child process never actually *needs* ``__main__``.  By
+    temporarily giving ``__main__`` a ``__spec__`` whose ``name``
+    equals ``'__main__'``, we cause
+    :func:`multiprocessing.spawn.get_preparation_data` to use the
+    ``init_main_from_name`` path instead of the ``main_path`` path.
+    The child then skips the expensive file-based re-import entirely.
+
+    The ``__spec__`` is restored immediately after
+    :meth:`~multiprocessing.Process.start` returns (start only sends
+    serialised preparation data to the child; the child reads it later).
+
+    .. note::
+
+       Submitted callables must reside in importable modules (not
+       defined directly in ``__main__``).  This has always been a
+       requirement of the ``spawn`` start method.
+    """
+    import types
+    main = sys.modules.get("__main__")
+    if main is None:
+        return None
+    old_spec = getattr(main, "__spec__", None)
+    if old_spec is not None:
+        return None  # already has a proper spec; no override needed
+    main.__spec__ = types.SimpleNamespace(name="__main__")
+    return old_spec  # always None here, but returned for the restore call
+
+
+def _restore_main_spec(old_spec: Any) -> None:
+    """Restore ``__main__.__spec__`` after a process has been started."""
+    main = sys.modules.get("__main__")
+    if main is not None:
+        main.__spec__ = old_spec
 
 
 class _Cancelled(Exception):
@@ -602,41 +650,93 @@ class ProcessQueue:
         result_queue = self._ctx.Queue(maxsize=1)
         process = self._ctx.Process(target=_invoke, args=(item, result_queue), name=f"PTQ-Exec-{item.task_id[:8]}")
         running.process = process
-        process.start()
+        # Prevent the subprocess from re-importing __main__ (see
+        # _no_main_reimport docstring for rationale).
+        saved = _no_main_reimport()
+        try:
+            process.start()
+        finally:
+            _restore_main_spec(saved)
         deadline = None if item.opts.timeout is None else time.perf_counter() + item.opts.timeout
 
         try:
-            while process.is_alive():
+            # Poll both the process liveness AND the result queue.
+            #
+            # On Windows the multiprocessing Queue writes to an OS pipe
+            # via a background feeder thread.  If the serialised result
+            # exceeds the pipe buffer (~65 KB) the subprocess's
+            # ``result_queue.put()`` blocks until the consumer drains
+            # some data.  Draining only happens when the parent calls
+            # ``result_queue.get()``.  The old code deferred that call
+            # until *after* the process exited, creating a deadlock
+            # whenever the result was large enough to fill the pipe.
+            #
+            # The fix: attempt a non-blocking ``get()`` on every poll
+            # iteration so the pipe is drained promptly, allowing the
+            # subprocess to finish its ``put()`` and exit normally.
+            result = _SENTINEL = object()
+
+            while True:
+                # --- check cancellation ---
                 if running.cancel_event.is_set():
                     self._terminate(process)
                     raise _Cancelled
+
+                # --- check timeout ---
                 if deadline is not None:
                     remaining = deadline - time.perf_counter()
                     if remaining <= 0:
                         self._terminate(process)
                         raise TimeoutError(f"Task '{item.name}' exceeded {item.opts.timeout}s timeout")
-                    process.join(timeout=min(self._poll, remaining))
+
+                # --- try to read a result (non-blocking) ---
+                if result is _SENTINEL:
+                    try:
+                        result = result_queue.get_nowait()
+                    except queue_mod.Empty:
+                        pass
+
+                # --- if we have the result AND the process exited, done ---
+                alive = process.is_alive()
+                if result is not _SENTINEL and not alive:
+                    break
+                if not alive:
+                    # Process exited but no result yet — one last read
+                    try:
+                        result = result_queue.get(timeout=self._poll)
+                    except queue_mod.Empty:
+                        if process.exitcode and process.exitcode != 0:
+                            raise RuntimeError(
+                                f"Process exited with status {process.exitcode}"
+                            ) from None
+                        raise RuntimeError(
+                            "Process exited without returning a result"
+                        ) from None
+                    break
+
+                # --- wait a bit for the process to finish ---
+                if deadline is not None:
+                    process.join(timeout=min(self._poll, max(0, remaining)))
                 else:
                     process.join(timeout=self._poll)
 
             if running.cancel_event.is_set():
                 raise _Cancelled
 
-            try:
-                kind, payload = result_queue.get(timeout=self._poll)
-            except queue_mod.Empty:
-                if process.exitcode and process.exitcode != 0:
-                    raise RuntimeError(f"Process exited with status {process.exitcode}") from None
-                raise RuntimeError("Process exited without returning a result") from None
-
+            kind, payload = result
             if kind == "error":
                 raise payload
             return payload
         finally:
-            process.join(timeout=0)
+            process.join(timeout=5)
+            if process.is_alive():
+                self._terminate(process)
             running.process = None
             result_queue.close()
-            result_queue.join_thread()
+            try:
+                result_queue.join_thread()
+            except Exception:
+                pass
 
     def _interruptible_sleep(self, delay: float, cancel_event: threading.Event) -> None:
         deadline = time.perf_counter() + delay
