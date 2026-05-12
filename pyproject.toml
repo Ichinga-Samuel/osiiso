@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osiiso"
-version = "0.0.1a1"
+version = "0.0.1a2"
 description = "Structured concurrency and parallelism for asyncio, threading, and multiprocessing using queues."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -38,6 +38,8 @@ dependencies = []
 uvloop = ["uvloop>=0.19"]
 docs = [
     "mkdocs>=1.6.1",
+    "mkdocs-material>=9.5",
+    "pymdown-extensions>=10.7",
 ]
 dev = [
     "build>=1.2.2",
@@ -50,6 +52,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/Ichinga-Samuel/osiiso"
+Documentation = "https://ichinga-samuel.github.io/osiiso/"
 Repository = "https://github.com/Ichinga-Samuel/osiiso"
 Issues = "https://github.com/Ichinga-Samuel/osiiso/issues"
 

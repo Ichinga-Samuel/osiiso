@@ -1,25 +1,111 @@
 site_name: osiiso
-site_description: Structured queues for asyncio, threading, and multiprocessing.
+site_description: Structured task queues for asyncio, threading, and multiprocessing in Python.
 site_url: https://ichinga-samuel.github.io/osiiso/
 repo_url: https://github.com/Ichinga-Samuel/osiiso
 repo_name: Ichinga-Samuel/osiiso
+copyright: Copyright &copy; 2026 Ichinga Samuel
+
 theme:
-  name: readthedocs
-  highlightjs: true
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    logo: material/console-network
+
 nav:
-  - Home: index.md
-  - Quick Start: guides/quick-start.md
-  - Queue Guide: guides/queues.md
-  - Task Options: guides/task-options.md
-  - Groups and Handles: guides/groups-and-handles.md
-  - Lifecycle and Policies: guides/lifecycle-and-policies.md
+  - Home:
+      - Overview: index.md
+      - Installation: installation.md
+      - Changelog: changelog.md
+  - Getting Started:
+      - Quick Start: guides/quick-start.md
+      - Choosing a Queue: guides/choosing-a-queue.md
+  - User Guide:
+      - Task Submission: guides/task-submission.md
+      - Task Options: guides/task-options.md
+      - Handles & Groups: guides/handles-and-groups.md
+      - Results & Summaries: guides/results-and-summaries.md
+      - Lifecycle & Policies: guides/lifecycle-and-policies.md
+      - Bound Tasks: guides/bound-tasks.md
   - Examples:
-      - Hacker News Showcase: examples/hacker-news-showcase.md
       - Feature Gallery: examples/feature-gallery.md
-  - API Reference: reference/api.md
-  - GitHub Pages: github-pages.md
+      - Hacker News Pipeline: examples/hacker-news-pipeline.md
+  - API Reference:
+      - Overview: reference/index.md
+      - AsyncQueue: reference/asyncqueue.md
+      - ThreadQueue: reference/threadqueue.md
+      - ProcessQueue: reference/processqueue.md
+      - TaskOptions: reference/taskoptions.md
+      - Handles: reference/handles.md
+      - Groups: reference/groups.md
+      - TaskResult: reference/taskresult.md
+      - RunSummary: reference/runsummary.md
+      - Exceptions: reference/exceptions.md
+      - Runner: reference/runner.md
+
 markdown_extensions:
   - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - pymdownx.mark
+  - pymdownx.critic
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - tables
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
   - toc:
       permalink: true
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Ichinga-Samuel/osiiso
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/osiiso/
