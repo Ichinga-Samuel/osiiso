@@ -361,7 +361,7 @@ wheels = [
 
 [[package]]
 name = "osiiso"
-version = "0.0.1a1"
+version = "0.0.1a2"
 source = { editable = "." }
 
 [package.optional-dependencies]
