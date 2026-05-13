@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/osiiso-banner.png" alt="osiiso structured task queue banner" width="100%">
-</p>
-
 # osiiso
 
 Structured task queues for Python across `asyncio`, threads, and processes.
@@ -343,7 +339,7 @@ The showcase uses all three backends:
 
 ## Documentation
 
-The MkDocs documentation lives in [`docs/`](docs/index.md).
+Full documentation is available at **[ichinga-samuel.github.io/osiiso](https://ichinga-samuel.github.io/osiiso/)**.
 
 Run the docs locally:
 
@@ -356,12 +352,6 @@ Build the docs strictly:
 
 ```bash
 mkdocs build --strict
-```
-
-Project docs are configured for GitHub Pages at:
-
-```text
-https://ichinga-samuel.github.io/osiiso/
 ```
 
 ## Development
