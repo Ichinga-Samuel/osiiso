@@ -124,3 +124,439 @@ class TestResetAndClosed:
         q.shutdown()
         with pytest.raises(ClosedError):
             q.submit(double, 2)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helper functions for new tests (must be pickleable)
+# ---------------------------------------------------------------------------
+
+
+_flaky_counter = None
+
+
+def _flaky_init():
+    """Reset the flaky counter in the parent process."""
+    global _flaky_counter
+    import multiprocessing
+    _flaky_counter = multiprocessing.Value("i", 0)
+
+
+def _flaky_task():
+    """Fail the first time, succeed on retry.
+
+    Uses a file-based counter because subprocess state is isolated.
+    """
+    import tempfile
+    import os
+    marker = os.path.join(tempfile.gettempdir(), "_osiiso_flaky_marker.txt")
+    if not os.path.exists(marker):
+        with open(marker, "w") as f:
+            f.write("1")
+        raise ValueError("first attempt fails")
+    os.remove(marker)
+    return "recovered"
+
+
+def _cleanup_flaky_marker():
+    import tempfile
+    import os
+    marker = os.path.join(tempfile.gettempdir(), "_osiiso_flaky_marker.txt")
+    if os.path.exists(marker):
+        os.remove(marker)
+
+
+def _greet(name, greeting="Hello"):
+    return f"{greeting}, {name}!"
+
+
+def _square(x):
+    return x ** 2
+
+
+def _noop():
+    return "noop"
+
+
+def _return_arg(x):
+    return x
+
+
+# -- Retry extended -----------------------------------------------------------
+
+
+class TestRetryExtended:
+    def test_retry_succeeds_eventually(self):
+        """Task fails then succeeds on retry."""
+        _cleanup_flaky_marker()
+        try:
+            q = ProcessQueue(workers=1)
+            q.submit(_flaky_task, retries=2)
+            summary = q.run()
+            assert summary.ok
+            assert summary.values == ("recovered",)
+        finally:
+            _cleanup_flaky_marker()
+
+
+# -- Fail policies ------------------------------------------------------------
+
+
+class TestFailPolicies:
+    def test_fail_first_stops_queue(self):
+        """fail_first cancels remaining tasks."""
+        q = ProcessQueue(workers=1, fail_policy="fail_first")
+        q.submit(fail_always)
+        q.submit(double, 1)
+        q.submit(double, 2)
+        summary = q.run()
+        assert summary.failed >= 1
+
+    def test_continue_policy(self):
+        """continue collects all results."""
+        q = ProcessQueue(workers=1, fail_policy="continue")
+        q.submit(fail_always)
+        q.submit(double, 1)
+        summary = q.run()
+        assert summary.failed == 1
+        assert summary.succeeded == 1
+
+
+# -- Context manager extended --------------------------------------------------
+
+
+class TestContextManagerExtended:
+    def test_exception_cancels(self):
+        """Exception in context manager triggers force shutdown."""
+        with pytest.raises(RuntimeError):
+            with ProcessQueue(workers=1) as q:
+                q.submit(slow, 10)
+                raise RuntimeError("abort")
+        assert q.closed
+
+
+# -- cancel() method ----------------------------------------------------------
+
+
+class TestCancelMethod:
+    def test_cancel_stops_queue(self):
+        """cancel() stops the queue."""
+        import threading
+
+        q = ProcessQueue(workers=1)
+        q.submit(slow, 10)
+        q.start()
+        time.sleep(0.3)
+        t = threading.Thread(target=q.cancel)
+        t.start()
+        t.join(timeout=10)
+        assert q.closed
+
+
+# -- Handle extended -----------------------------------------------------------
+
+
+class TestHandleExtended:
+    def test_handle_value(self):
+        """handle.value() on succeeded task returns the result."""
+        with ProcessQueue(workers=1) as q:
+            h = q.submit(double, 5)
+            h.wait(timeout=5)
+        assert h.value() == 10
+
+    def test_handle_done(self):
+        """handle.done() returns False before and True after completion."""
+        q = ProcessQueue(workers=1)
+        h = q.submit(double, 1)
+        # Before running, done() should be False
+        assert not h.done()
+        q.run()
+        assert h.done()
+
+    def test_handle_cancel(self):
+        """handle.cancel() on pending task succeeds."""
+        with ProcessQueue(workers=1) as q:
+            h = q.submit(slow, 10)
+            time.sleep(0.3)
+            cancelled = h.cancel()
+            assert cancelled or h.done()
+
+
+# -- Decorator ----------------------------------------------------------------
+
+
+def _work_increment(x):
+    return x + 1
+
+
+def _square(x):
+    return x ** 2
+
+
+class TestDecorator:
+    def test_task_decorator(self):
+        """@q.task() decorator works."""
+        q = ProcessQueue(workers=1)
+        bound = q.task(retries=1)(_work_increment)
+        h = bound(10)
+        from osiiso import SyncTaskHandle
+        assert isinstance(h, SyncTaskHandle)
+        summary = q.run()
+        assert summary.ok
+        assert h.value() == 11
+
+    def test_decorator_map(self):
+        """bound_task.map() works."""
+        q = ProcessQueue(workers=2)
+        bound = q.task()(_square)
+        bound.map([1, 2, 3])
+        summary = q.run()
+        assert set(summary.values) == {1, 4, 9}
+
+
+# -- Hooks ---------------------------------------------------------------------
+
+
+class TestHooks:
+    def test_on_start(self):
+        """on_start callback fires."""
+        started = []
+        q = ProcessQueue(workers=1, on_start=lambda h: started.append(h.name))
+        q.submit(double, 1)
+        q.run()
+        assert started == ["double"]
+
+    def test_on_complete(self):
+        """on_complete callback fires."""
+        completed = []
+        q = ProcessQueue(workers=1, on_complete=lambda r: completed.append(r.status))
+        q.submit(double, 1)
+        q.submit(double, 2)
+        q.run()
+        assert completed == ["succeeded", "succeeded"]
+
+    def test_on_retry(self):
+        """on_retry callback fires on retries."""
+        _cleanup_flaky_marker()
+        retry_calls = []
+
+        def on_retry(handle, exc):
+            retry_calls.append(type(exc).__name__)
+
+        try:
+            q = ProcessQueue(workers=1, on_retry=on_retry)
+            q.submit(_flaky_task, retries=2)
+            q.run()
+            assert len(retry_calls) >= 1
+            assert retry_calls[0] == "ValueError"
+        finally:
+            _cleanup_flaky_marker()
+
+
+# -- map with tuples ----------------------------------------------------------
+
+
+class TestMapExtended:
+    def test_map_tuples(self):
+        """map with tuple unpacking."""
+        q = ProcessQueue(workers=2)
+        q.map(add, [(1, 2), (3, 4), (5, 6)])
+        summary = q.run()
+        assert summary.succeeded == 3
+        assert set(summary.values) == {3, 7, 11}
+
+
+# -- group extended -----------------------------------------------------------
+
+
+class TestGroupExtended:
+    def test_group_homogeneous(self):
+        """group(fn, iterable) form works."""
+        q = ProcessQueue(workers=2)
+        g = q.group(double, [1, 2, 3])
+        summary = q.run()
+        assert summary.ok
+        group_summary = g.wait()
+        assert set(group_summary.values) == {2, 4, 6}
+
+    def test_group_values(self):
+        """group.values() returns values."""
+        q = ProcessQueue(workers=2)
+        g = q.group([(double, 5), (double, 10)])
+        q.run()
+        values = g.values()
+        assert set(values) == {10, 20}
+
+
+# -- clear_results -------------------------------------------------------------
+
+
+class TestClearResults:
+    def test_clear_results(self):
+        """clear_results() empties results."""
+        q = ProcessQueue(workers=1)
+        q.submit(double, 5)
+        q.submit(double, 10)
+        q.run()
+        assert len(q.results) == 2
+        q.clear_results()
+        assert len(q.results) == 0
+
+
+# -- Constructor validation ----------------------------------------------------
+
+
+class TestConstructorValidation:
+    def test_negative_size_raises(self):
+        """ProcessQueue(size=-1) raises ValueError."""
+        with pytest.raises(ValueError, match="size must be >= 0"):
+            ProcessQueue(size=-1)
+
+    def test_zero_workers_raises(self):
+        """ProcessQueue(workers=0) raises ValueError."""
+        with pytest.raises(ValueError, match="workers must be > 0"):
+            ProcessQueue(workers=0)
+
+
+# -- stats property ------------------------------------------------------------
+
+
+class TestStatsProperty:
+    def test_stats_returns_dict(self):
+        """stats property returns expected structure."""
+        q = ProcessQueue(workers=1)
+        q.submit(double, 1)
+        q.run()
+        s = q.stats
+        assert isinstance(s, dict)
+        assert "pending" in s
+        assert "active" in s
+        assert "completed" in s
+        assert "workers" in s
+        assert "closed" in s
+        assert s["completed"] == 1
+
+
+# -- join() --------------------------------------------------------------------
+
+
+class TestJoin:
+    def test_join_completes_work(self):
+        """join() waits for pending tasks to finish."""
+        q = ProcessQueue(workers=2)
+        h1 = q.submit(double, 3)
+        h2 = q.submit(double, 7)
+        q.join()
+        assert h1.done()
+        assert h2.done()
+        assert h1.value() == 6
+        assert h2.value() == 14
+        q.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers for new tests (must be pickleable on Windows)
+# ---------------------------------------------------------------------------
+
+
+async def _async_double(x):
+    return x * 2
+
+
+def _important_work():
+    time.sleep(0.2)
+    return "completed"
+
+
+# -- Submit awaitable ---------------------------------------------------------
+
+
+class TestSubmitAwaitable:
+    def test_submit_awaitable_raises(self):
+        """Submitting a bare awaitable (coroutine object) raises TypeError."""
+        q = ProcessQueue(workers=1)
+        coro = _async_double(5)  # calling the async function produces a coroutine
+        try:
+            with pytest.raises(TypeError, match="process tasks must be callable, not awaitable"):
+                q.submit(coro)
+        finally:
+            coro.close()
+
+
+# -- Coroutine function in subprocess ----------------------------------------
+
+
+class TestCoroutineInSubprocess:
+    def test_coroutine_function_runs(self):
+        """Coroutine function is executed with asyncio.run in the subprocess."""
+        q = ProcessQueue(workers=1)
+        h = q.submit(_async_double, 7)
+        summary = q.run()
+        assert summary.ok
+        assert h.value() == 14
+
+
+# -- Scheduling (delay / run_at) ---------------------------------------------
+
+
+class TestSchedulingProcess:
+    def test_delay(self):
+        """submit with delay= defers execution."""
+        q = ProcessQueue(workers=1)
+        start = time.perf_counter()
+        h = q.submit(double, 3, delay=0.3)
+        summary = q.run()
+        elapsed = time.perf_counter() - start
+        assert summary.ok
+        assert h.value() == 6
+        assert elapsed >= 0.25
+
+    def test_run_at(self):
+        """submit with run_at= defers execution until wall-clock time."""
+        q = ProcessQueue(workers=1)
+        start = time.perf_counter()
+        h = q.submit(double, 4, run_at=time.time() + 0.3)
+        summary = q.run()
+        elapsed = time.perf_counter() - start
+        assert summary.ok
+        assert h.value() == 8
+        assert elapsed >= 0.25
+
+
+# -- must_complete tasks survive timeout --------------------------------------
+
+
+class TestMustCompleteProcess:
+    def test_must_complete_survives_timeout(self):
+        """A must_complete task finishes even when the queue times out."""
+        q = ProcessQueue(workers=2, on_exit="complete_priority")
+        q.submit(slow, 10)                              # will be cancelled
+        h = q.submit(_important_work, must_complete=True)  # should survive
+        summary = q.run(timeout=0.5)
+        assert summary.timed_out
+        assert h.done()
+        assert h.status == "succeeded"
+        assert h.value() == "completed"
+
+
+# -- Negative timeout in constructor ------------------------------------------
+
+
+class TestNegativeTimeout:
+    def test_negative_timeout_raises(self):
+        """ProcessQueue(timeout=-1) raises ValueError."""
+        with pytest.raises(ValueError, match="timeout must be > 0"):
+            ProcessQueue(timeout=-1)
+
+
+# -- handle.exception() on failure --------------------------------------------
+
+
+class TestHandleException:
+    def test_exception_returns_error(self):
+        """handle.exception() returns the ValueError on a failed task."""
+        q = ProcessQueue(workers=1)
+        h = q.submit(fail_always)
+        q.run()
+        exc = h.exception()
+        assert isinstance(exc, ValueError)
+        assert str(exc) == "boom"
