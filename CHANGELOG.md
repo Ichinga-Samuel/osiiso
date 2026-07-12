@@ -4,9 +4,11 @@ All notable changes to this project are documented in this file.
 
 This project follows semantic versioning where practical:
 
-- Major versions may include breaking API changes.
-- Minor versions add backward-compatible features.
-- Patch versions fix bugs, tighten documentation, or improve internals without changing the public contract.
+- **Major** versions may include breaking API changes.
+- **Minor** versions add backward-compatible features.
+- **Patch** versions fix bugs, tighten documentation, or improve internals.
+
+---
 
 ## [Unreleased]
 
@@ -16,13 +18,15 @@ This project follows semantic versioning where practical:
 - Community documentation for contributing, security reporting, support, and project conduct.
 - GitHub issue templates and pull request template.
 
-## [1.0.0] - 2026-07-11
+---
+
+## [1.0.0] — 2026-07-11
 
 Core rewrite around a shared engine. Breaking release.
 
 ### Added
 
-- Rate limiting on every queue: `rate=` (attempts/second) and `burst=`, implemented as a thread-safe GCRA token bucket.
+- **Rate limiting** on every queue: `rate=` (attempts/second) and `burst=`, implemented as a thread-safe GCRA token bucket.
 - **Persistent process pool**: `ProcessQueue` workers now keep a subprocess alive and ship tasks over a pipe instead of spawning one process per task. Worker crashes are reported as task failures and the pool respawns automatically.
 - `initializer` / `initargs` on `ThreadQueue` (runs in each worker thread) and `ProcessQueue` (runs inside each subprocess).
 - `handle.add_done_callback(fn)` on both handle flavours.
@@ -58,7 +62,9 @@ Core rewrite around a shared engine. Breaking release.
 - A worker cancelled from outside now cancels its in-flight task instead of leaking it.
 - Retrying a bare awaitable is rejected at submit time (a spent coroutine cannot be re-awaited).
 
-## [0.0.1] - 2026-05-11
+---
+
+## [0.0.1] — 2026-05-11
 
 Initial release.
 
@@ -68,7 +74,7 @@ Initial release.
 - **`ThreadQueue`** — blocking synchronous work with the same queue shape as the async backend.
 - **`ProcessQueue`** — CPU-heavy work in subprocesses with full feature parity.
 - **`TaskOptions`** — immutable, reusable configuration for task submission.
-- **`TaskHandle`** and **`SyncTaskHandle`** — waiting, cancellation, status inspection, and result access.
+- **`TaskHandle`** and **`SyncTaskHandle`** — for waiting, cancellation, status inspection, and result access.
 - **`TaskGroup`** and **`SyncTaskGroup`** — named batches of submitted work.
 - **`TaskResult`** and **`RunSummary`** — structured result reporting with grouping, filtering, and display.
 - **`osiiso.run()`** — convenience runner with optional `uvloop` integration.

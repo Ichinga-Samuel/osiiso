@@ -51,7 +51,7 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -e .[docs]
 
       - name: Build docs strictly
-        run: mkdocs build --strict
+        run: mkdocs build --strict --clean
 
   build:
     runs-on: ubuntu-latest

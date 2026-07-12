@@ -45,7 +45,7 @@ nav:
   - Home:
       - Overview: index.md
       - Installation: installation.md
-      - Changelog: changelog.md
+      - Changelog: https://github.com/Ichinga-Samuel/osiiso/blob/master/CHANGELOG.md
   - Getting Started:
       - Quick Start: guides/quick-start.md
       - Choosing a Queue: guides/choosing-a-queue.md
@@ -72,9 +72,6 @@ nav:
       - Exceptions: reference/exceptions.md
       - Runner: reference/runner.md
       - Shortcuts: reference/shortcuts.md
-  - Internals:
-      - Codebase Walkthrough: internals.md
-
 markdown_extensions:
   - admonition
   - pymdownx.details
