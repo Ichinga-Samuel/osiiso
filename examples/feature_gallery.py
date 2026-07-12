@@ -72,7 +72,7 @@ async def async_queue_gallery() -> None:
     handles = q.map(async_fetch, [(label, delay) for label, delay in [("slow", 0.04), ("fast", 0.01), ("mid", 0.02)]])
     await q.start()
     seen: list[str] = []
-    async for handle in osiiso.AsyncQueue.as_completed(handles):
+    async for handle in osiiso.as_completed(handles):
         seen.append(handle.value())
     await q.shutdown()
     print("as_completed order:", seen)

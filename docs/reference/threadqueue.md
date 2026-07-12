@@ -18,11 +18,14 @@ ThreadQueue(
     timeout: float | None = None,
     mode: Literal["finite", "infinite"] = "finite",
     fail_policy: Literal["continue", "fail_first"] = "continue",
-    on_exit: Literal["complete_priority", "cancel"] = "complete_priority",
+    on_timeout: Literal["cancel", "complete"] = "complete",
+    rate: float | None = None,
+    burst: int = 1,
+    initializer: Callable[..., Any] | None = None,
+    initargs: tuple = (),
     on_start: Callable[[SyncTaskHandle], Any] | None = None,
     on_complete: Callable[[TaskResult], Any] | None = None,
     on_retry: Callable[[SyncTaskHandle, BaseException], Any] | None = None,
-    poll: float = 0.05,
 )
 ```
 
@@ -30,7 +33,15 @@ Accepts all the same parameters as [`AsyncQueue`](asyncqueue.md), plus:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `poll` | `float` | `0.05` | Seconds between cancellation/timeout checks during sync execution |
+| `initializer` | `callable` | `None` | Run once in each worker thread before it processes tasks |
+| `initargs` | `tuple` | `()` | Arguments passed to `initializer` |
+
+Unlike `AsyncQueue`, a bounded `ThreadQueue` (`size > 0`) **blocks** `submit()`
+until space frees instead of raising, giving natural backpressure.
+
+Cancellation and per-task timeouts are event-driven: a timed-out or cancelled
+attempt is *abandoned* — its sidecar thread keeps running in the background,
+but its outcome is discarded.
 
 !!! note "Sync callables only"
     `ThreadQueue` raises `TypeError` if you submit an awaitable or coroutine
@@ -103,7 +114,7 @@ with ThreadQueue(workers=4) as q:
 | Property | Type | Description |
 |----------|------|-------------|
 | `active_count` | `int` | Tasks currently executing |
-| `pending_count` | `int` | Tasks waiting in the queue |
+| `pending_count` | `int` | Tasks waiting to execute (queued or scheduled) |
 | `closed` | `bool` | `True` after shutdown completes |
 | `results` | `tuple[TaskResult, ...]` | Snapshot of all accumulated results |
-| `stats` | `dict` | `{"pending", "active", "completed", "workers", "closed"}` |
+| `stats` | `dict` | `{"pending", "active", "scheduled", "completed", "workers", "closed"}` |

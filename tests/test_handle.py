@@ -10,7 +10,6 @@ import pytest
 from osiiso.handle import SyncTaskHandle, TaskHandle
 from osiiso.result import TaskResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -29,7 +28,8 @@ def _make_async_handle(
 ) -> TaskHandle:
     """Create a TaskHandle with sensible defaults."""
     if cancel_fn is None:
-        cancel_fn = lambda tid: False
+        def cancel_fn(tid):
+            return False
     return TaskHandle(
         task_id=task_id,
         name=name,
@@ -57,7 +57,8 @@ def _make_sync_handle(
 ) -> SyncTaskHandle:
     """Create a SyncTaskHandle with sensible defaults."""
     if cancel_fn is None:
-        cancel_fn = lambda tid: False
+        def cancel_fn(tid):
+            return False
     return SyncTaskHandle(
         task_id=task_id,
         name=name,
@@ -210,13 +211,19 @@ class TestTaskHandle:
 
     def test_cancel_before_done_delegates_to_cancel_fn(self):
         """cancel() delegates to _cancel_fn and returns its boolean result."""
-        cancel_fn = lambda tid: True
+
+        def cancel_fn(tid):
+            return True
+
         h = _make_async_handle(cancel_fn=cancel_fn)
         assert h.cancel() is True
 
     def test_cancel_before_done_returns_false_when_fn_returns_false(self):
         """cancel() returns False when _cancel_fn returns False."""
-        cancel_fn = lambda tid: False
+
+        def cancel_fn(tid):
+            return False
+
         h = _make_async_handle(cancel_fn=cancel_fn)
         assert h.cancel() is False
 
@@ -405,3 +412,60 @@ class TestSyncTaskHandle:
         assert h.attempts == 1
         h._mark_running()
         assert h.attempts == 2
+
+
+# ===================================================================
+# Done callbacks & metadata
+# ===================================================================
+
+class TestDoneCallbacks:
+    def test_callback_deferred_until_finish(self):
+        h = _make_async_handle()
+        fired = []
+        h.add_done_callback(lambda handle: fired.append(handle.value()))
+        assert fired == []
+        h._mark_finished(_succeeded_result(value=7))
+        assert fired == [7]
+
+    def test_callback_immediate_when_already_done(self):
+        h = _make_async_handle()
+        h._mark_finished(_succeeded_result(value=1))
+        fired = []
+        h.add_done_callback(lambda handle: fired.append(handle.status))
+        assert fired == ["succeeded"]
+
+    def test_callback_exception_swallowed(self):
+        h = _make_sync_handle()
+
+        def bad(handle):
+            raise RuntimeError("callback exploded")
+
+        h.add_done_callback(bad)
+        # Must not raise even though the callback does.
+        h._mark_finished(_succeeded_result(task_id="s1"))
+        assert h.done()
+
+    def test_multiple_callbacks_all_fire(self):
+        h = _make_sync_handle()
+        fired = []
+        h.add_done_callback(lambda handle: fired.append(1))
+        h.add_done_callback(lambda handle: fired.append(2))
+        h._mark_finished(_succeeded_result(task_id="s1"))
+        assert fired == [1, 2]
+
+
+class TestHandleMetadata:
+    def test_metadata_defaults_to_none(self):
+        assert _make_async_handle().metadata is None
+
+    def test_metadata_stored(self):
+        h = TaskHandle(
+            task_id="m1",
+            name="task",
+            priority=3,
+            must_complete=False,
+            created_at=1.0,
+            cancel_fn=lambda tid: False,
+            metadata={"k": "v"},
+        )
+        assert h.metadata == {"k": "v"}

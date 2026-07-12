@@ -1,13 +1,11 @@
 """Tests for osiiso.result — TaskResult, RunSummary, and make_result."""
 
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from osiiso.exceptions import ExecutionError
 from osiiso.result import RunSummary, TaskResult, make_result
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

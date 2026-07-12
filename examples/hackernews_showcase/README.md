@@ -1,8 +1,8 @@
 # Hacker News Showcase
 
-This is a complete, runnable example project based on the original `test project`
-folder. It keeps the Hacker News data shape but defaults to local fixtures, so it
-can be used in docs, CI, and workshops without depending on the network.
+This is a complete, runnable example project. It keeps the Hacker News data
+shape but defaults to local fixtures, so it can be used in docs, CI, and
+workshops without depending on the network.
 
 Run it from the repository root:
 

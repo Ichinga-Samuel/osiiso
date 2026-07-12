@@ -1,11 +1,12 @@
 """Tests for the ThreadQueue."""
 
+import threading
 import time
 from functools import partial
 
 import pytest
 
-from osiiso import ClosedError, SyncTaskHandle, TaskOptions, ThreadQueue
+from osiiso import ClosedError, ExecutionError, SyncTaskHandle, TaskOptions, ThreadQueue, iter_completed, tmap
 
 
 def double(x):
@@ -546,7 +547,7 @@ class TestMustComplete:
             result_holder.append("done")
             return "completed"
 
-        q = ThreadQueue(workers=2, on_exit="complete_priority")
+        q = ThreadQueue(workers=2, on_timeout="complete")
         q.submit(slow, 10)  # long-running, will be cancelled
         q.submit(important, must_complete=True)
         summary = q.run(timeout=0.3)
@@ -559,18 +560,17 @@ class TestMustComplete:
 
 
 class TestDetachedThread:
-    def test_detached_flag_on_result(self):
-        """Submit with detached=True; result.detached is True."""
+    def test_detached_excluded_from_summary(self):
+        """Detached tasks run but are excluded from the RunSummary."""
         q = ThreadQueue(workers=2)
-        q.submit(double, 5, detached=True)
+        h = q.submit(double, 5, detached=True)
         q.submit(double, 10)
         summary = q.run()
-        detached = [r for r in summary.results if r.detached]
-        normal = [r for r in summary.results if not r.detached]
-        assert len(detached) == 1
-        assert detached[0].value == 10
-        assert len(normal) == 1
-        assert normal[0].value == 20
+        assert summary.total_submitted == 1
+        assert summary.values == (20,)
+        assert h.done()
+        assert h.value() == 10
+        assert any(r.detached for r in q.results)
 
 
 # -- run_at scheduling ---------------------------------------------------------
@@ -587,3 +587,149 @@ class TestRunAtScheduling:
         assert summary.ok
         assert summary.values == (10,)
         assert elapsed >= 0.25  # small margin for timing
+
+
+# -- Graceful drain on exit ------------------------------------------------------
+
+
+class TestDrainOnExit:
+    def test_context_exit_drains_pending_tasks(self):
+        """Leaving the context without run() executes pending tasks."""
+        seen = []
+
+        def collect(x):
+            seen.append(x)
+            return x
+
+        with ThreadQueue(workers=2) as q:
+            handles = q.map(collect, [1, 2, 3])
+        assert sorted(seen) == [1, 2, 3]
+        assert all(h.status == "succeeded" for h in handles)
+
+
+# -- Bounded queue: submit blocks ---------------------------------------------------
+
+
+class TestBoundedQueue:
+    def test_submit_blocks_until_space(self):
+        q = ThreadQueue(workers=1, size=1)
+        q.start()
+        q.submit(slow, 0.3)
+        t0 = time.perf_counter()
+        h = q.submit(double, 4)  # must wait for the slow task to finish
+        blocked_for = time.perf_counter() - t0
+        q.shutdown()
+        assert blocked_for >= 0.2
+        assert h.value() == 8
+
+
+# -- Rate limiting -------------------------------------------------------------------
+
+
+class TestRateLimit:
+    def test_rate_spaces_attempts(self):
+        stamps = []
+        lock = threading.Lock()
+
+        def mark():
+            with lock:
+                stamps.append(time.perf_counter())
+
+        q = ThreadQueue(workers=4, rate=20)
+        q.map(mark, [()] * 6)
+        summary = q.run()
+        assert summary.ok
+        assert max(stamps) - min(stamps) >= 0.2
+
+
+# -- Worker initializer -----------------------------------------------------------------
+
+
+class TestInitializer:
+    def test_initializer_runs_in_each_worker(self):
+        ready = []
+        lock = threading.Lock()
+
+        def init(tag):
+            with lock:
+                ready.append((threading.current_thread().name, tag))
+
+        q = ThreadQueue(workers=2, initializer=init, initargs=("db",))
+        q.map(double, [1, 2, 3, 4])
+        summary = q.run()
+        assert summary.ok
+        assert len(ready) == 2
+        assert all(tag == "db" for _, tag in ready)
+
+
+# -- iter_completed ------------------------------------------------------------------------
+
+
+class TestIterCompleted:
+    def test_yields_in_completion_order(self):
+        with ThreadQueue(workers=2) as q:
+            slow_h = q.submit(slow, 0.3)
+            fast_h = q.submit(double, 1)
+            ordered = list(iter_completed([slow_h, fast_h], timeout=5))
+        assert ordered[0] is fast_h
+        assert ordered[1] is slow_h
+
+    def test_group_as_completed(self):
+        with ThreadQueue(workers=2) as q:
+            g = q.group(double, [1, 2, 3])
+            values = sorted(h.value() for h in g.as_completed(timeout=5))
+        assert values == [2, 4, 6]
+
+    def test_timeout_raises(self):
+        q = ThreadQueue(workers=1)
+        q.start()
+        h = q.submit(slow, 10)
+        with pytest.raises(TimeoutError):
+            list(iter_completed([h], timeout=0.1))
+        q.shutdown(force=True)
+
+
+# -- Scheduled tasks do not block workers ----------------------------------------------------
+
+
+class TestSchedulerNonBlocking:
+    def test_delayed_task_does_not_starve_ready_tasks(self):
+        order = []
+        lock = threading.Lock()
+
+        def mark(tag):
+            with lock:
+                order.append(tag)
+
+        q = ThreadQueue(workers=1)
+        q.submit(mark, "delayed", delay=0.3)
+        q.submit(mark, "immediate")
+        q.run()
+        assert order == ["immediate", "delayed"]
+
+
+# -- tmap shortcut -----------------------------------------------------------------------------
+
+
+class TestTmap:
+    def test_tmap_ordered_values(self):
+        assert tmap(double, [3, 1, 2], workers=4) == (6, 2, 4)
+
+    def test_tmap_raises_on_failure(self):
+        with pytest.raises(ExecutionError):
+            tmap(fail_always, ["a"], workers=1)
+
+
+# -- fail_first spares must_complete ------------------------------------------------------------
+
+
+class TestFailFirstMustComplete:
+    def test_must_complete_survives_fail_first(self):
+        q = ThreadQueue(workers=1, fail_policy="fail_first")
+        q.submit(fail_always)
+        protected = q.submit(slow, 0.05, must_complete=True)
+        expendable = q.submit(double, 1)
+        summary = q.run()
+        assert summary.failed == 1
+        assert protected.status == "succeeded"
+        assert expendable.status == "cancelled"

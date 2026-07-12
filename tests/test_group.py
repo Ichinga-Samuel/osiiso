@@ -11,7 +11,6 @@ from osiiso.group import SyncTaskGroup, TaskGroup
 from osiiso.handle import SyncTaskHandle, TaskHandle
 from osiiso.result import TaskResult
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -23,7 +22,8 @@ def _async_handle(
 ) -> TaskHandle:
     """Create a TaskHandle with minimal defaults."""
     if cancel_fn is None:
-        cancel_fn = lambda tid: False
+        def cancel_fn(tid):
+            return False
     return TaskHandle(
         task_id=task_id,
         name=name,
@@ -41,7 +41,8 @@ def _sync_handle(
 ) -> SyncTaskHandle:
     """Create a SyncTaskHandle with minimal defaults."""
     if cancel_fn is None:
-        cancel_fn = lambda tid: False
+        def cancel_fn(tid):
+            return False
     return SyncTaskHandle(
         task_id=task_id,
         name=name,

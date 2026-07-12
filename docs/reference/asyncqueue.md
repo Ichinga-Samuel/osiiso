@@ -19,7 +19,9 @@ AsyncQueue(
     timeout: float | None = None,
     mode: Literal["finite", "infinite"] = "finite",
     fail_policy: Literal["continue", "fail_first"] = "continue",
-    on_exit: Literal["complete_priority", "cancel"] = "complete_priority",
+    on_timeout: Literal["cancel", "complete"] = "complete",
+    rate: float | None = None,
+    burst: int = 1,
     on_start: Callable[[TaskHandle], Any] | None = None,
     on_complete: Callable[[TaskResult], Any] | None = None,
     on_retry: Callable[[TaskHandle, BaseException], Any] | None = None,
@@ -29,16 +31,18 @@ AsyncQueue(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `workers` | `int \| None` | `None` | Fixed worker count. `None` auto-scales up to `min(32, cpu_count × 4)` |
-| `size` | `int` | `0` | Max priority queue capacity (`0` = unbounded) |
+| `size` | `int` | `0` | Max outstanding tasks (`0` = unbounded); `submit()` raises `QueueFullError` when full |
 | `timeout` | `float \| None` | `None` | Queue-level run timeout in seconds |
 | `mode` | `str` | `"finite"` | `"finite"` drains and stops; `"infinite"` runs until shutdown |
-| `fail_policy` | `str` | `"continue"` | `"continue"` records failures; `"fail_first"` cancels on first failure |
-| `on_exit` | `str` | `"complete_priority"` | `"complete_priority"` protects must-complete tasks; `"cancel"` stops all |
+| `fail_policy` | `str` | `"continue"` | `"continue"` records failures; `"fail_first"` cancels on first failure (spares `must_complete`) |
+| `on_timeout` | `str` | `"complete"` | On run timeout, `"complete"` protects must-complete tasks; `"cancel"` stops all |
+| `rate` | `float \| None` | `None` | Max task attempts per second across all workers |
+| `burst` | `int` | `1` | With `rate`, attempts that may start back-to-back after idle |
 | `on_start` | `callable` | `None` | Callback `(handle) -> None` before task execution |
 | `on_complete` | `callable` | `None` | Callback `(result) -> None` after task completion |
 | `on_retry` | `callable` | `None` | Callback `(handle, exc) -> None` before retry |
 
-**Raises:** `ValueError` if `size < 0`, `workers <= 0`, or `timeout <= 0`.
+**Raises:** `ValueError` if `size < 0`, `workers <= 0`, `timeout <= 0`, `rate <= 0`, or `burst < 1`.
 
 ---
 
@@ -52,7 +56,10 @@ Submit a single task. Returns a [`TaskHandle`](handles.md#taskhandle).
 - `opts`: Optional base [`TaskOptions`](taskoptions.md)
 - `**overrides`: Field overrides applied on top of `opts`
 
-**Raises:** [`ClosedError`](exceptions.md#closederror) if the queue is not accepting tasks.
+**Raises:** [`ClosedError`](exceptions.md#closederror) if the queue is not
+accepting tasks; [`QueueFullError`](exceptions.md#queuefullerror) if a bounded
+queue (`size > 0`) is full; `ValueError` if a bare awaitable is submitted with
+`retries > 0` (a spent coroutine cannot be re-awaited).
 
 ### `map(fn, iterable, *, opts=None, **overrides) -> list[TaskHandle]`
 
@@ -133,14 +140,14 @@ On normal exit: graceful drain. On exception: `force=True` shutdown.
 
 ---
 
-## Static Methods
+## Completion-Order Iteration
 
-### `async as_completed(handles) -> AsyncIterator[TaskHandle]`
+### `osiiso.as_completed(handles) -> AsyncIterator[TaskHandle]`
 
-Yield handles in completion order (fastest first):
+Module-level helper; yields handles in completion order (fastest first):
 
 ```python
-async for handle in AsyncQueue.as_completed(handles):
+async for handle in osiiso.as_completed(handles):
     print(handle.value())
 ```
 
@@ -151,7 +158,7 @@ async for handle in AsyncQueue.as_completed(handles):
 | Property | Type | Description |
 |----------|------|-------------|
 | `active_count` | `int` | Tasks currently executing |
-| `pending_count` | `int` | Tasks waiting in the queue |
+| `pending_count` | `int` | Tasks waiting to execute (queued or scheduled) |
 | `closed` | `bool` | `True` after shutdown completes |
 | `results` | `tuple[TaskResult, ...]` | Snapshot of all accumulated results |
-| `stats` | `dict` | `{"pending", "active", "completed", "workers", "closed"}` |
+| `stats` | `dict` | `{"pending", "active", "scheduled", "completed", "workers", "closed"}` |

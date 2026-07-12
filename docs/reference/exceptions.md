@@ -3,7 +3,7 @@
 All exceptions raised by osiiso descend from `OsiisoError`.
 
 ```python
-from osiiso import OsiisoError, ClosedError, ExecutionError
+from osiiso import OsiisoError, ClosedError, QueueFullError, ExecutionError
 ```
 
 ---
@@ -37,19 +37,33 @@ q.submit(work, 1)  # raises ClosedError
 
 ---
 
+## QueueFullError
+
+Raised by `AsyncQueue.submit()` when a bounded queue (`size > 0`) already has
+`size` outstanding tasks.  Sync queues block on `submit()` instead of raising.
+
+```python
+q = osiiso.AsyncQueue(size=100)
+q.submit(work, 1)  # raises QueueFullError once 100 tasks are outstanding
+```
+
+**Inherits from:** `OsiisoError`
+
+---
+
 ## ExecutionError
 
-Raised when one or more tasks fail during queue execution.
+Raised when one or more tasks fail (or are cancelled) during queue execution.
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
-| `results` | `tuple[TaskResult, ...]` | The failed TaskResult objects |
+| `results` | `tuple[TaskResult, ...]` | The offending TaskResult objects |
 
 Raised by:
 
 - `q.run(strict=True)`
 - `summary.raise_for_errors()`
-- `group.values()` (when any task in the group failed)
+- `group.values()` and `amap()`/`tmap()`/`pmap()` (when any task failed **or was cancelled**)
 
 ```python
 try:

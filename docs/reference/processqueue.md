@@ -3,6 +3,13 @@
 `osiiso.ProcessQueue` — process-based task queue for CPU-heavy work in
 subprocesses.
 
+Each worker owns a **persistent subprocess**: tasks are shipped over a pipe
+and results shipped back, so spawn cost is paid once per worker instead of
+once per task.  Timeouts and cancellation terminate the subprocess (it is
+respawned for the next task), and a crashed worker is reported as that task's
+failure while the pool recovers automatically.  Pool subprocesses are
+daemonic, so task code must not spawn multiprocessing children of its own.
+
 ```python
 from osiiso import ProcessQueue
 ```
@@ -19,12 +26,15 @@ ProcessQueue(
     timeout: float | None = None,
     mode: Literal["finite", "infinite"] = "finite",
     fail_policy: Literal["continue", "fail_first"] = "continue",
-    on_exit: Literal["complete_priority", "cancel"] = "complete_priority",
+    on_timeout: Literal["cancel", "complete"] = "complete",
+    rate: float | None = None,
+    burst: int = 1,
+    context: Any = None,
+    initializer: Callable[..., Any] | None = None,
+    initargs: tuple = (),
     on_start: Callable[[SyncTaskHandle], Any] | None = None,
     on_complete: Callable[[TaskResult], Any] | None = None,
     on_retry: Callable[[SyncTaskHandle, BaseException], Any] | None = None,
-    poll: float = 0.05,
-    context: Any = None,
 )
 ```
 
@@ -32,8 +42,16 @@ Accepts all the same parameters as [`ThreadQueue`](threadqueue.md), plus:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `poll` | `float` | `0.05` | Seconds between cancellation/timeout checks |
 | `context` | `Any` | `None` | Custom `multiprocessing` context (e.g., `multiprocessing.get_context("spawn")`) |
+| `initializer` | `callable` | `None` | Picklable callable run once **inside each subprocess** before it accepts tasks |
+| `initargs` | `tuple` | `()` | Arguments passed to `initializer` |
+
+Two differences from `ThreadQueue`:
+
+- With `workers=None`, the pool auto-scales up to `min(32, cpu_count)`
+  (one process per core), not `cpu_count × 4`.
+- An `initializer` failure is reported as the failure of the task that
+  triggered the subprocess spawn, rather than aborting the whole queue.
 
 ---
 
@@ -137,10 +155,10 @@ if __name__ == "__main__":
 | Property | Type | Description |
 |----------|------|-------------|
 | `active_count` | `int` | Tasks currently executing |
-| `pending_count` | `int` | Tasks waiting in the queue |
+| `pending_count` | `int` | Tasks waiting to execute (queued or scheduled) |
 | `closed` | `bool` | `True` after shutdown completes |
 | `results` | `tuple[TaskResult, ...]` | Snapshot of all accumulated results |
-| `stats` | `dict` | `{"pending", "active", "completed", "workers", "closed"}` |
+| `stats` | `dict` | `{"pending", "active", "scheduled", "completed", "workers", "closed"}` |
 
 ---
 

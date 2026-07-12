@@ -30,3 +30,4 @@ from osiiso import TaskResult
 | `finished_at` | `float` | `perf_counter` completion timestamp |
 | `duration` | `float` | Wall-clock seconds from start to finish |
 | `message` | `str` | Short outcome description |
+| `metadata` | `Any` | User data from `TaskOptions.metadata` |

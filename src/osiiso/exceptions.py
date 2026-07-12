@@ -1,9 +1,4 @@
-"""Public exception hierarchy for the osiiso package.
-
-All exceptions raised by osiiso descend from :class:`OsiisoError`, so callers
-can use a single ``except OsiisoError`` clause to catch library-specific errors
-without suppressing unrelated exceptions.
-"""
+"""Public exception hierarchy — everything osiiso raises descends from :class:`OsiisoError`."""
 
 from __future__ import annotations
 
@@ -18,26 +13,31 @@ class OsiisoError(Exception):
 
 
 class ClosedError(OsiisoError):
-    """Raised when a task is submitted to a queue that is closed or shutting down.
+    """Raised when a task is submitted to a queue that is closed or shutting down."""
 
-    Thrown by ``submit()``, ``map()``, and ``group()`` when called after
-    ``shutdown()`` has been initiated or after the context-manager block exits.
+
+class QueueFullError(OsiisoError):
+    """Raised by :meth:`AsyncQueue.submit` when a bounded queue (``size > 0``) is full.
+
+    Sync queues (:class:`~osiiso.ThreadQueue`, :class:`~osiiso.ProcessQueue`)
+    block on submit instead of raising.
     """
 
 
 class ExecutionError(OsiisoError):
-    """Raised when one or more tasks fail during queue execution.
+    """Raised when one or more tasks fail (or are cancelled) during execution.
 
     Attributes:
-        results: Tuple of :class:`~osiiso.TaskResult` objects whose
-            ``status`` is ``"failed"``.
+        results: Tuple of the offending :class:`~osiiso.TaskResult` objects.
     """
 
     def __init__(self, results: list[TaskResult] | tuple[TaskResult, ...]):
-        """Initialise the error.
-
-        Args:
-            results: The failed :class:`~osiiso.TaskResult` objects.
-        """
         self.results = tuple(results)
-        super().__init__(f"{len(self.results)} task(s) failed")
+        failed = sum(1 for r in self.results if r.status == "failed")
+        cancelled = len(self.results) - failed
+        parts = []
+        if failed:
+            parts.append(f"{failed} task(s) failed")
+        if cancelled:
+            parts.append(f"{cancelled} task(s) cancelled")
+        super().__init__("; ".join(parts) or "0 task(s) failed")

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import osiiso.loop as loop_module
-from osiiso.loop import run, _check_uvloop
+from osiiso.loop import _check_uvloop, run
 
 
 class TestRun:
@@ -79,7 +79,7 @@ class TestRun:
         run(noop(), use_uvloop=False)
         policy_after = asyncio.get_event_loop_policy()
         # With use_uvloop=False the policy should not be changed at all
-        assert type(policy_after) == type(policy_before)
+        assert type(policy_after) is type(policy_before)
 
 
 class TestCheckUvloop:

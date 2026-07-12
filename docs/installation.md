@@ -59,6 +59,7 @@ Expected output:
 
 ```
 ['AsyncQueue', 'ThreadQueue', 'ProcessQueue', 'TaskHandle', 'SyncTaskHandle',
- 'TaskGroup', 'SyncTaskGroup', 'TaskOptions', 'TaskResult', 'RunSummary',
- 'OsiisoError', 'ClosedError', 'ExecutionError', 'run']
+ 'TaskGroup', 'SyncTaskGroup', 'as_completed', 'iter_completed', 'TaskOptions',
+ 'TaskResult', 'RunSummary', 'OsiisoError', 'ClosedError', 'QueueFullError',
+ 'ExecutionError', 'run', 'amap', 'tmap', 'pmap']
 ```

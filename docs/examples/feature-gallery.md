@@ -128,7 +128,7 @@ async def async_queue_gallery() -> None:
     ])
     await q.start()
     seen: list[str] = []
-    async for handle in osiiso.AsyncQueue.as_completed(handles):
+    async for handle in osiiso.as_completed(handles):
         seen.append(handle.value())
     await q.shutdown()
     print("as_completed order:", seen)

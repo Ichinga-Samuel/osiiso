@@ -1,4 +1,4 @@
-"""osiiso — structured concurrency for asyncio, threading, and multiprocessing.
+"""osiiso — structured concurrency and parallelism for asyncio, threading, and multiprocessing.
 
 Quick start::
 
@@ -11,16 +11,20 @@ Quick start::
             return await q.run()
 
     summary = osiiso.run(main())
+
+    # Or one-shot helpers:
+    values = osiiso.tmap(process, items, workers=8)
 """
 
 from .asyncqueue import AsyncQueue
-from .exceptions import ClosedError, ExecutionError, OsiisoError
-from .group import SyncTaskGroup, TaskGroup
+from .exceptions import ClosedError, ExecutionError, OsiisoError, QueueFullError
+from .group import SyncTaskGroup, TaskGroup, as_completed, iter_completed
 from .handle import SyncTaskHandle, TaskHandle
 from .loop import run
 from .options import TaskOptions
 from .processqueue import ProcessQueue
 from .result import RunSummary, TaskResult
+from .shortcuts import amap, pmap, tmap
 from .threadqueue import ThreadQueue
 
 __all__ = [
@@ -31,9 +35,11 @@ __all__ = [
     # Handles
     "TaskHandle",
     "SyncTaskHandle",
-    # Groups
+    # Groups & completion iteration
     "TaskGroup",
     "SyncTaskGroup",
+    "as_completed",
+    "iter_completed",
     # Options & results
     "TaskOptions",
     "TaskResult",
@@ -41,7 +47,11 @@ __all__ = [
     # Exceptions
     "OsiisoError",
     "ClosedError",
+    "QueueFullError",
     "ExecutionError",
-    # Runner
+    # Runners & shortcuts
     "run",
+    "amap",
+    "tmap",
+    "pmap",
 ]

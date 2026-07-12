@@ -1,11 +1,4 @@
-"""Immutable result types produced after task and queue execution.
-
-This module provides two frozen dataclasses:
-
-* :class:`TaskResult` — the outcome of a single task execution.
-* :class:`RunSummary` — an aggregate summary of a completed queue run or
-  group wait.
-"""
+"""Immutable result types: :class:`TaskResult` per task and :class:`RunSummary` per run."""
 
 from __future__ import annotations
 
@@ -14,39 +7,34 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Any, Literal
 
+TaskStatus = Literal["succeeded", "failed", "cancelled"]
+
 
 @dataclass(frozen=True, slots=True)
 class TaskResult:
     """Immutable record of a single completed task.
 
-    Created internally by queue workers via :func:`make_result`.
-
     Attributes:
-        task_id: UUID hex string that uniquely identifies the task.
-        name: Human-readable name derived from the callable or
-            ``TaskOptions.name``.
-        status: Final outcome — ``"succeeded"``, ``"failed"``, or
-            ``"cancelled"``.
-        value: The callable's return value (``status == "succeeded"`` only).
-        exception: The exception raised by the callable (``"failed"`` only).
-        attempts: Total execution attempts (1 on first success, >1 after
-            retries).
-        priority: Priority level copied from :class:`~osiiso.TaskOptions`.
-        must_complete: Whether the task bypasses cancellation on shutdown.
+        task_id: Unique hex identifier for the task.
+        name: Human-readable name (from the callable or ``TaskOptions.name``).
+        status: ``"succeeded"``, ``"failed"``, or ``"cancelled"``.
+        value: The callable's return value (succeeded only).
+        exception: The exception raised by the callable (failed only).
+        attempts: Total execution attempts (1 on first success, >1 after retries).
+        priority: Priority copied from :class:`~osiiso.TaskOptions`.
+        must_complete: Whether the task was protected from cancellation.
         group_id: Owning group identifier, or ``None``.
-        detached: ``True`` if the result is not awaited by ``run()``.
-        scheduled_for: Absolute ``perf_counter`` target time, or ``None``.
-        created_at: ``perf_counter`` timestamp when the task was submitted.
-        started_at: ``perf_counter`` timestamp of the first attempt, or
-            ``None`` if cancelled before starting.
-        finished_at: ``perf_counter`` timestamp when the task completed.
-        duration: Wall-clock seconds from first execution to completion.
+        detached: ``True`` if the result was excluded from the run summary.
+        scheduled_for: Absolute monotonic target start time, or ``None``.
+        created_at / started_at / finished_at: Monotonic timestamps.
+        duration: Seconds from first execution to completion (0.0 if never started).
         message: Short human-readable description of the outcome.
+        metadata: User data from :class:`~osiiso.TaskOptions.metadata`.
     """
 
     task_id: str
     name: str
-    status: Literal["succeeded", "failed", "cancelled"]
+    status: TaskStatus
     value: Any = None
     exception: BaseException | None = None
     attempts: int = 0
@@ -60,20 +48,16 @@ class TaskResult:
     finished_at: float = 0.0
     duration: float = 0.0
     message: str = ""
+    metadata: Any = None
 
 
 @dataclass(frozen=True, slots=True)
 class RunSummary:
-    """Aggregate summary of a completed queue run or group wait.
-
-    Produced by ``AsyncQueue.run()``, ``ThreadQueue.run()``,
-    ``ProcessQueue.run()``, and the ``wait()`` methods of task groups.
+    """Aggregate summary of a queue run or group wait.
 
     Attributes:
         total_submitted: Total tasks covered by this summary.
-        succeeded: Count of tasks with ``status == "succeeded"``.
-        failed: Count of tasks with ``status == "failed"``.
-        cancelled: Count of tasks with ``status == "cancelled"``.
+        succeeded / failed / cancelled: Counts by final status.
         timed_out: ``True`` if the run was cut short by a timeout.
         duration: Wall-clock seconds from run start to summary creation.
         results: Ordered tuple of every :class:`TaskResult` in this run.
@@ -89,7 +73,7 @@ class RunSummary:
 
     @property
     def errors(self) -> tuple[TaskResult, ...]:
-        """All failed :class:`TaskResult` objects in this run."""
+        """All failed results."""
         return tuple(r for r in self.results if r.status == "failed")
 
     @property
@@ -99,59 +83,46 @@ class RunSummary:
 
     @property
     def ok(self) -> bool:
-        """``True`` if the run completed with no failures, cancellations, or timeouts."""
+        """``True`` if no failures, cancellations, or timeout."""
         return self.failed == 0 and self.cancelled == 0 and not self.timed_out
 
     def by_task_id(self) -> dict[str, TaskResult]:
-        """Index results by ``task_id``.
-
-        Returns:
-            Mapping of ``task_id`` → :class:`TaskResult`.
-        """
+        """Index results by ``task_id``."""
         return {r.task_id: r for r in self.results}
 
     def by_name(self) -> dict[str, tuple[TaskResult, ...]]:
-        """Group results by task name.
-
-        Returns:
-            Mapping of task name → tuple of :class:`TaskResult` objects.
-        """
+        """Group results by task name."""
         grouped: dict[str, list[TaskResult]] = defaultdict(list)
         for r in self.results:
             grouped[r.name].append(r)
         return {k: tuple(v) for k, v in grouped.items()}
 
     def by_group(self) -> dict[str | None, tuple[TaskResult, ...]]:
-        """Group results by ``group_id``.
-
-        Returns:
-            Mapping of ``group_id`` (``None`` for ungrouped tasks) → tuple
-            of :class:`TaskResult` objects.
-        """
+        """Group results by ``group_id`` (``None`` for ungrouped tasks)."""
         grouped: dict[str | None, list[TaskResult]] = defaultdict(list)
         for r in self.results:
             grouped[r.group_id].append(r)
         return {k: tuple(v) for k, v in grouped.items()}
 
     def successes(self) -> tuple[TaskResult, ...]:
-        """All succeeded :class:`TaskResult` objects in this run."""
+        """All succeeded results."""
         return tuple(r for r in self.results if r.status == "succeeded")
 
     def cancellations(self) -> tuple[TaskResult, ...]:
-        """All cancelled :class:`TaskResult` objects in this run."""
+        """All cancelled results."""
         return tuple(r for r in self.results if r.status == "cancelled")
 
-    def raise_for_errors(self) -> None:
-        """Raise if any task in this run failed.
+    def raise_for_errors(self, *, include_cancelled: bool = False) -> None:
+        """Raise :class:`~osiiso.ExecutionError` if any task failed.
 
-        Raises:
-            ~osiiso.ExecutionError: Contains all failed :class:`TaskResult`
-                objects when ``failed > 0``.
+        Args:
+            include_cancelled: Also raise when tasks were cancelled.
         """
         from .exceptions import ExecutionError
 
-        if self.errors:
-            raise ExecutionError(list(self.errors))
+        bad = self.errors + (self.cancellations() if include_cancelled else ())
+        if bad:
+            raise ExecutionError(bad)
 
     def display(self) -> None:
         """Print a clean, human-readable summary to stdout."""
@@ -167,10 +138,8 @@ class RunSummary:
             f"  Cancelled   : {self.cancelled}",
             f"  Duration    : {self.duration:.3f}s",
         ]
-
         if self.errors:
-            lines.append(bar)
-            lines.append("  Failures:")
+            lines += [bar, "  Failures:"]
             for r in self.errors:
                 label = f"    - {r.name}"
                 if r.attempts > 1:
@@ -178,26 +147,12 @@ class RunSummary:
                 lines.append(label)
                 if r.message:
                     lines.append(f"      {r.message}")
-
         lines.append(bar)
         print("\n".join(lines))
 
     @classmethod
-    def from_results(
-        cls, results: list[TaskResult], *, run_start: float, timed_out: bool
-    ) -> RunSummary:
-        """Build a :class:`RunSummary` from a list of task results.
-
-        Internal factory used by queue implementations.
-
-        Args:
-            results: :class:`TaskResult` objects collected during the run.
-            run_start: A ``perf_counter`` timestamp marking the run start.
-            timed_out: Whether the run was interrupted by a timeout.
-
-        Returns:
-            A fully-populated :class:`RunSummary`.
-        """
+    def from_results(cls, results: list[TaskResult] | tuple[TaskResult, ...], *, run_start: float, timed_out: bool) -> RunSummary:
+        """Build a summary from collected results (internal factory)."""
         items = tuple(results)
         counts = Counter(r.status for r in items)
         return cls(
@@ -212,29 +167,9 @@ class RunSummary:
 
 
 def make_result(
-    handle: Any,
-    *,
-    status: Literal["succeeded", "failed", "cancelled"],
-    value: Any = None,
-    exception: BaseException | None = None,
-    message: str = "",
+    handle: Any, status: TaskStatus, *, value: Any = None, exception: BaseException | None = None, message: str = ""
 ) -> TaskResult:
-    """Build a :class:`TaskResult` from a handle's current state.
-
-    Internal helper called by queue worker loops.
-
-    Args:
-        handle: A :class:`~osiiso.TaskHandle` or
-            :class:`~osiiso.SyncTaskHandle` whose metadata is copied into
-            the result.
-        status: Final outcome of the task.
-        value: Callable return value (``"succeeded"`` only).
-        exception: Exception raised by the callable (``"failed"`` only).
-        message: Short description of the outcome.
-
-    Returns:
-        A frozen :class:`TaskResult`.
-    """
+    """Build a :class:`TaskResult` from a handle's current state (internal helper)."""
     finished_at = time.perf_counter()
     started_at = handle._started_at
     return TaskResult(
@@ -254,4 +189,5 @@ def make_result(
         finished_at=finished_at,
         duration=(finished_at - started_at) if started_at else 0.0,
         message=message,
+        metadata=handle.metadata,
     )

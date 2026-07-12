@@ -71,6 +71,9 @@ nav:
       - RunSummary: reference/runsummary.md
       - Exceptions: reference/exceptions.md
       - Runner: reference/runner.md
+      - Shortcuts: reference/shortcuts.md
+  - Internals:
+      - Codebase Walkthrough: internals.md
 
 markdown_extensions:
   - admonition

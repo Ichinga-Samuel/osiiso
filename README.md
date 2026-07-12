@@ -38,11 +38,17 @@ It is dependency-free at runtime, typed with `py.typed`, and built around a pred
 - Priority scheduling where lower priority numbers run first.
 - Retries with optional delay and exponential backoff.
 - Per-task timeouts and queue-level run timeouts.
-- Graceful shutdown with `must_complete` task protection.
+- Built-in rate limiting (`rate=` / `burst=`) across all backends.
+- Delayed and absolute-time scheduling that never blocks a worker.
+- A persistent process pool — subprocesses are reused across tasks, with crash detection and automatic respawn.
+- Graceful shutdown that drains outstanding work, with `must_complete` protection.
 - Batch workflows with `submit()`, `map()`, and `group()`.
-- Awaitable async handles and blocking sync handles.
-- Structured `RunSummary` and immutable `TaskResult` records.
+- Awaitable async handles and blocking sync handles, with `add_done_callback()`.
+- Completion-order iteration via `as_completed()` (async) and `iter_completed()` (sync).
+- One-shot helpers: `amap()`, `tmap()`, and `pmap()` return ordered values.
+- Structured `RunSummary` and immutable `TaskResult` records with `metadata` passthrough.
 - Lifecycle hooks for `on_start`, `on_complete`, and `on_retry`.
+- Worker `initializer` support for threads and subprocesses.
 - Optional `uvloop` integration through `osiiso.run()`.
 
 ## Installation
@@ -148,6 +154,32 @@ values = group.values()
 ```
 
 For `AsyncQueue`, use `await group.wait()` and `await group.values()`.
+`values()` raises `ExecutionError` if any task failed or was cancelled, so a
+returned tuple always lines up 1:1 with the inputs.  Iterate a group in
+completion order with `group.as_completed()`.
+
+### One-shot helpers
+
+When all you need is "run this function over these inputs", skip the queue
+ceremony.  Each helper builds a queue, runs it, and returns values in input
+order, raising `ExecutionError` on any failure:
+
+```python
+pages = await osiiso.amap(fetch, urls, workers=8, retries=2)   # AsyncQueue
+sizes = osiiso.tmap(stat_file, paths, workers=8)               # ThreadQueue
+scores = osiiso.pmap(rank, datasets, workers=4)                # ProcessQueue
+```
+
+### Rate limiting
+
+Every queue accepts `rate` (maximum task attempts per second) and `burst`
+(how many attempts may start back-to-back after an idle period):
+
+```python
+async with osiiso.AsyncQueue(workers=8, rate=10, burst=3) as q:
+    q.map(call_api, payloads, retries=2)
+    await q.run()
+```
 
 ### Bound tasks
 
@@ -210,7 +242,14 @@ print(summary.values)
 
 ### ProcessQueue
 
-Keep process tasks importable and pickleable. Top-level functions and plain data arguments are the safest choice.
+Each worker owns a **persistent subprocess** that is reused across tasks, so
+spawn cost is paid once per worker instead of once per task.  Timeouts and
+cancellation terminate the subprocess (it is respawned for the next task),
+and a crashed worker is reported as that task's failure while the pool
+recovers automatically.
+
+Tasks and arguments must be pickleable, and standard spawn rules apply:
+guard your script's entry point with `if __name__ == "__main__":`.
 
 ```python
 import osiiso
@@ -255,7 +294,8 @@ q.submit(fetch, other_url, retries=3, retry_delay=0.5, backoff=2)
 | `run_at` | `None` | Run at an absolute epoch timestamp. |
 | `name` | `None` | Custom result and hook name. |
 | `group_id` | `None` | Group label for summaries. |
-| `detached` | `False` | Metadata flag for fire-and-forget style tasks. |
+| `detached` | `False` | Task still runs, but its result is excluded from the `RunSummary`; observe it via its handle. |
+| `metadata` | `None` | Arbitrary user data carried onto the handle and the `TaskResult`. |
 
 `TaskOptions` validates invalid combinations immediately. For example, `delay` and `run_at` are mutually exclusive, negative retries are rejected, and unknown submit options raise `TypeError`.
 
@@ -291,15 +331,24 @@ Each task result is stored as a `TaskResult` with task id, name, status, value, 
 Queues support finite and long-running modes:
 
 ```python
-q = osiiso.AsyncQueue(mode="finite", fail_policy="continue", on_exit="complete_priority")
+q = osiiso.AsyncQueue(mode="finite", fail_policy="continue", on_timeout="complete")
 ```
 
 - `mode="finite"` runs pending work and exits.
 - `mode="infinite"` keeps workers alive until shutdown or timeout.
 - `fail_policy="continue"` records failures and keeps processing.
-- `fail_policy="fail_first"` cancels remaining eligible work after the first failure.
-- `on_exit="complete_priority"` lets `must_complete` tasks finish during graceful shutdown.
-- `on_exit="cancel"` cancels eligible pending and active work on timeout or forced shutdown.
+- `fail_policy="fail_first"` cancels remaining work after the first failure (`must_complete` tasks are spared).
+- `on_timeout="complete"` lets `must_complete` tasks finish when a run times out.
+- `on_timeout="cancel"` cancels everything when a run times out.
+
+Leaving the context manager (or calling `shutdown()`) drains all outstanding
+work — including scheduled tasks — before stopping workers.  Use
+`shutdown(force=True)` (or raise inside the `with` block) to cancel
+everything immediately instead.
+
+Bounded queues (`size=N`) cap outstanding tasks: sync queues block `submit()`
+until space frees (natural backpressure), while `AsyncQueue.submit()` raises
+`QueueFullError`.
 
 Hooks give you a simple integration point for logging, metrics, and tracing:
 
@@ -423,8 +472,14 @@ from osiiso import (
     RunSummary,
     ExecutionError,
     ClosedError,
+    QueueFullError,
     OsiisoError,
     run,
+    amap,
+    tmap,
+    pmap,
+    as_completed,
+    iter_completed,
 )
 ```
 

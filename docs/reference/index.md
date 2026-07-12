@@ -18,9 +18,11 @@ from osiiso import (
     TaskHandle,
     SyncTaskHandle,
 
-    # Groups
+    # Groups & completion iteration
     TaskGroup,
     SyncTaskGroup,
+    as_completed,
+    iter_completed,
 
     # Options & results
     TaskOptions,
@@ -30,10 +32,14 @@ from osiiso import (
     # Exceptions
     OsiisoError,
     ClosedError,
+    QueueFullError,
     ExecutionError,
 
-    # Runner
+    # Runner & one-shot helpers
     run,
+    amap,
+    tmap,
+    pmap,
 )
 ```
 
@@ -77,6 +83,7 @@ from osiiso import (
 |-------|-------------|
 | [OsiisoError](exceptions.md#osiisoerror) | Base exception |
 | [ClosedError](exceptions.md#closederror) | Queue is closed |
+| [QueueFullError](exceptions.md#queuefullerror) | Bounded `AsyncQueue` is full |
 | [ExecutionError](exceptions.md#executionerror) | Tasks failed |
 
 ### Utilities
@@ -84,3 +91,5 @@ from osiiso import (
 | Function | Description |
 |----------|-------------|
 | [run()](runner.md) | Convenience runner with uvloop support |
+| [amap() / tmap() / pmap()](shortcuts.md) | One-shot mapping helpers returning ordered values |
+| [as_completed() / iter_completed()](groups.md#module-level-completion-iteration) | Yield handles in completion order |

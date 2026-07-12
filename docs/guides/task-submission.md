@@ -119,6 +119,24 @@ group = q.group(fetch, ["users", "posts", "comments"], group_id="api-calls")
 
 ---
 
+## One-Shot Helpers — `amap()` / `tmap()` / `pmap()`
+
+When all you need is "run this function over these inputs", skip the queue
+ceremony. Each helper builds a queue, runs it, and returns the values **in
+input order**, raising `ExecutionError` if any task failed or was cancelled:
+
+```python
+pages = await osiiso.amap(fetch, urls, workers=8, retries=2)   # AsyncQueue
+sizes = osiiso.tmap(stat_file, paths, workers=8)               # ThreadQueue
+scores = osiiso.pmap(rank, datasets, workers=4)                # ProcessQueue
+```
+
+Elements are interpreted like `map()`, and extra keyword arguments are
+`TaskOptions` fields. See the [Shortcuts reference](../reference/shortcuts.md)
+for full signatures.
+
+---
+
 ## Using `TaskOptions`
 
 Instead of passing options inline, create reusable [`TaskOptions`](task-options.md)

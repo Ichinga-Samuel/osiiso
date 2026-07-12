@@ -1,13 +1,8 @@
-"""Task handles — lightweight objects for awaiting, inspecting, and cancelling tasks.
+"""Task handles — await, inspect, cancel, and observe submitted tasks.
 
-This module defines two handle classes:
-
-* :class:`TaskHandle` — returned by :meth:`~osiiso.AsyncQueue.submit`;
-  awaitable from asyncio coroutines.
-* :class:`SyncTaskHandle` — returned by :meth:`~osiiso.ThreadQueue.submit`
-  and :meth:`~osiiso.ProcessQueue.submit`; blocks the calling thread.
-
-Handles are the primary way callers observe the lifecycle of a submitted task.
+* :class:`TaskHandle` — returned by :meth:`AsyncQueue.submit`; awaitable.
+* :class:`SyncTaskHandle` — returned by :meth:`ThreadQueue.submit` /
+  :meth:`ProcessQueue.submit`; blocks the calling thread.
 """
 
 from __future__ import annotations
@@ -15,30 +10,31 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import CancelledError
+from logging import getLogger
 from typing import Any, Literal
 
 from .result import TaskResult
 
-TaskStatus = Literal["pending", "running", "retrying", "succeeded", "failed", "cancelled"]
+logger = getLogger(__name__)
+
+TaskState = Literal["pending", "running", "retrying", "succeeded", "failed", "cancelled"]
 
 
-class TaskHandle:
-    """Async handle returned by :meth:`~osiiso.AsyncQueue.submit`.
-
-    Awaitable — ``await handle`` is equivalent to ``await handle.wait()``.
-    Thread-safe: the result can be resolved by a background thread while
-    an asyncio task awaits it.
+class _BaseHandle:
+    """State and behaviour shared by both handle flavours.
 
     Attributes:
         task_id: Unique hex identifier for this task.
         name: Human-readable name derived from the callable.
-        priority: Scheduling priority (lower number = higher priority).
-        must_complete: If ``True`` the task is not cancelled during shutdown.
-        created_at: ``perf_counter`` timestamp of submission.
+        priority: Scheduling priority (lower runs first).
+        must_complete: ``True`` if the task is protected from cancellation.
+        created_at: Monotonic timestamp of submission.
         group_id: Group this task belongs to, or ``None``.
-        detached: Whether the result is excluded from ``run()`` aggregation.
-        scheduled_for: Absolute ``perf_counter`` target start time, or ``None``.
+        detached: Whether the result is excluded from ``run()`` summaries.
+        scheduled_for: Absolute monotonic target start time, or ``None``.
+        metadata: User data from :class:`~osiiso.TaskOptions.metadata`.
     """
 
     __slots__ = (
@@ -50,14 +46,18 @@ class TaskHandle:
         "group_id",
         "detached",
         "scheduled_for",
+        "metadata",
         "_attempts",
         "_cancel_fn",
-        "_waiters",
         "_lock",
         "_result",
         "_status",
         "_started_at",
+        "_callbacks",
     )
+
+    _pending_error: type[Exception] = RuntimeError
+    _cancelled_error: type[BaseException] = asyncio.CancelledError
 
     def __init__(
         self,
@@ -67,24 +67,12 @@ class TaskHandle:
         priority: int,
         must_complete: bool,
         created_at: float,
-        cancel_fn: Any,
+        cancel_fn: Callable[[str], bool],
         group_id: str | None = None,
         detached: bool = False,
         scheduled_for: float | None = None,
+        metadata: Any = None,
     ) -> None:
-        """Create a handle.  Called internally by the queue.
-
-        Args:
-            task_id: UUID hex string for the task.
-            name: Human-readable task name.
-            priority: Scheduling priority integer.
-            must_complete: Whether to protect the task from cancellation.
-            created_at: ``perf_counter`` submission timestamp.
-            cancel_fn: Callable ``(task_id) -> bool`` used by :meth:`cancel`.
-            group_id: Optional group this task belongs to.
-            detached: If ``True``, excluded from ``run()`` aggregation.
-            scheduled_for: Absolute ``perf_counter`` start time, or ``None``.
-        """
         self.task_id = task_id
         self.name = name
         self.priority = priority
@@ -93,83 +81,149 @@ class TaskHandle:
         self.group_id = group_id
         self.detached = detached
         self.scheduled_for = scheduled_for
+        self.metadata = metadata
         self._attempts = 0
         self._cancel_fn = cancel_fn
-        self._waiters: set[asyncio.Future[TaskResult]] = set()
         self._lock = threading.Lock()
         self._result: TaskResult | None = None
-        self._status: TaskStatus = "pending"
+        self._status: TaskState = "pending"
         self._started_at: float | None = None
+        self._callbacks: list[Callable[[Any], Any]] | None = None
 
     def __repr__(self) -> str:
-        return f"TaskHandle({self.name!r}, status={self.status!r}, id={self.task_id[:8]})"
-
-    def __await__(self):
-        return self.wait().__await__()
+        return f"{type(self).__name__}({self.name!r}, status={self._status!r}, id={self.task_id[:8]})"
 
     @property
-    def status(self) -> TaskStatus:
+    def status(self) -> TaskState:
         """Current lifecycle status of the task."""
         return self._status
 
     @property
     def attempts(self) -> int:
-        """Number of execution attempts made so far (including the current one)."""
+        """Number of execution attempts made so far."""
         return self._attempts
 
     def done(self) -> bool:
-        """Return ``True`` if the task has a final result (succeeded, failed, or cancelled)."""
+        """``True`` once the task has a final result."""
         return self._result is not None
 
     def cancelled(self) -> bool:
-        """Return ``True`` if the task was cancelled."""
+        """``True`` if the task was cancelled."""
         r = self._result
         return r is not None and r.status == "cancelled"
 
-    def exception(self) -> BaseException | None:
-        """Return the exception from a failed task, or ``None`` on success.
-
-        Raises:
-            asyncio.InvalidStateError: If the task has not finished yet.
-        """
-        return self.result().exception
-
     def result(self) -> TaskResult:
-        """Return the :class:`~osiiso.TaskResult` for this task.
+        """Return the final :class:`~osiiso.TaskResult`.
 
         Raises:
-            asyncio.InvalidStateError: If the task has not finished yet.
+            asyncio.InvalidStateError / RuntimeError: If not finished yet
+                (async / sync handle respectively).
         """
         if self._result is None:
-            raise asyncio.InvalidStateError("result not ready")
+            raise self._pending_error("result not ready")
         return self._result
 
-    def value(self) -> Any:
-        """Return the callable's return value, re-raising on failure or cancellation.
+    def exception(self) -> BaseException | None:
+        """Exception from a failed task, or ``None`` (raises if not done)."""
+        return self.result().exception
 
-        Returns:
-            The value returned by the task callable.
+    def value(self) -> Any:
+        """The callable's return value; re-raises on failure or cancellation.
 
         Raises:
-            asyncio.InvalidStateError: If the task has not finished yet.
-            asyncio.CancelledError: If the task was cancelled.
+            asyncio.CancelledError / concurrent.futures.CancelledError: If the
+                task was cancelled (async / sync handle respectively).
             Exception: The exception originally raised by the task.
         """
         r = self.result()
         if r.status == "cancelled":
-            raise asyncio.CancelledError(r.message)
+            raise self._cancelled_error(r.message)
         if r.exception is not None:
             raise r.exception
         return r.value
 
+    def cancel(self) -> bool:
+        """Request cancellation; returns ``False`` if the task already finished."""
+        if self.done():
+            return False
+        return bool(self._cancel_fn(self.task_id))
+
+    def add_done_callback(self, fn: Callable[[Any], Any]) -> None:
+        """Call ``fn(handle)`` when the task finishes (immediately if already done).
+
+        Callbacks run in the thread (or event loop) that resolved the task;
+        exceptions are logged and swallowed.
+        """
+        with self._lock:
+            if self._result is None:
+                if self._callbacks is None:
+                    self._callbacks = []
+                self._callbacks.append(fn)
+                return
+        self._invoke_callback(fn)
+
+    # -- internal ---------------------------------------------------------
+
+    def _invoke_callback(self, fn: Callable[[Any], Any]) -> None:
+        try:
+            fn(self)
+        except Exception:
+            logger.exception("done callback raised for task %s", self.name)
+
+    def _mark_running(self) -> None:
+        self._attempts += 1
+        self._status = "running"
+        if self._started_at is None:
+            self._started_at = time.perf_counter()
+
+    def _mark_retrying(self) -> None:
+        self._status = "retrying"
+
+    def _mark_finished(self, result: TaskResult) -> bool:
+        """Set the final result once; wake waiters and fire callbacks."""
+        with self._lock:
+            if self._result is not None:
+                return False
+            self._result = result
+            self._status = result.status
+            callbacks, self._callbacks = self._callbacks, None
+            self._finish_locked()
+        self._finish_unlocked()
+        if callbacks:
+            for cb in callbacks:
+                self._invoke_callback(cb)
+        return True
+
+    def _finish_locked(self) -> None:  # subclass hook (lock held)
+        pass
+
+    def _finish_unlocked(self) -> None:  # subclass hook (lock released)
+        pass
+
+
+class TaskHandle(_BaseHandle):
+    """Awaitable handle returned by :meth:`AsyncQueue.submit`.
+
+    ``await handle`` is equivalent to ``await handle.wait()``.  Thread-safe:
+    the result may be resolved from another thread.
+    """
+
+    __slots__ = ("_waiters", "_resolved")
+
+    _pending_error = asyncio.InvalidStateError
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._waiters: set[asyncio.Future[TaskResult]] = set()
+        self._resolved: tuple[asyncio.Future[TaskResult], ...] = ()
+
+    def __await__(self):
+        return self.wait().__await__()
+
     async def wait(self) -> TaskResult:
-        """Await the task and return its :class:`~osiiso.TaskResult`.
+        """Await completion and return the :class:`~osiiso.TaskResult`.
 
-        Returns immediately if the task is already done.  Safe to call from
-        multiple coroutines concurrently.
-
-        Returns:
-            The final :class:`~osiiso.TaskResult` for this task.
+        Returns immediately if already done; safe to await from many coroutines.
         """
         if self._result is not None:
             return self._result
@@ -184,227 +238,50 @@ class TaskHandle:
             with self._lock:
                 self._waiters.discard(waiter)
 
-    def cancel(self) -> bool:
-        """Request cancellation of this task.
+    def _finish_locked(self) -> None:
+        self._resolved = tuple(self._waiters)
+        self._waiters.clear()
 
-        Returns:
-            ``True`` if the cancellation request was accepted, ``False`` if
-            the task was already done.
-        """
-        if self.done():
-            return False
-        return bool(self._cancel_fn(self.task_id))
-
-    def _mark_running(self) -> None:
-        self._attempts += 1
-        self._status = "running"
-        if self._started_at is None:
-            self._started_at = time.perf_counter()
-
-    def _mark_retrying(self) -> None:
-        self._status = "retrying"
-
-    def _mark_finished(self, result: TaskResult) -> None:
-        with self._lock:
-            if self._result is not None:
-                return
-            self._result = result
-            self._status = result.status
-            waiters = tuple(self._waiters)
-            self._waiters.clear()
+    def _finish_unlocked(self) -> None:
+        result = self._result
+        waiters, self._resolved = self._resolved, ()
         for w in waiters:
             loop = w.get_loop()
             if w.done() or loop.is_closed():
                 continue
             try:
-                loop.call_soon_threadsafe(self._resolve, w, result)
+                loop.call_soon_threadsafe(_resolve, w, result)
             except RuntimeError:
                 continue
 
-    @staticmethod
-    def _resolve(waiter: asyncio.Future[TaskResult], result: TaskResult) -> None:
-        if not waiter.done():
-            waiter.set_result(result)
+
+def _resolve(waiter: asyncio.Future[TaskResult], result: TaskResult) -> None:
+    if not waiter.done():
+        waiter.set_result(result)
 
 
-class SyncTaskHandle:
-    """Blocking handle returned by :meth:`~osiiso.ThreadQueue.submit` and
-    :meth:`~osiiso.ProcessQueue.submit`.
+class SyncTaskHandle(_BaseHandle):
+    """Blocking handle returned by :meth:`ThreadQueue.submit` / :meth:`ProcessQueue.submit`."""
 
-    All methods block the calling thread.  Thread-safe.
+    __slots__ = ("_cond",)
 
-    Attributes:
-        task_id: Unique hex identifier for this task.
-        name: Human-readable name derived from the callable.
-        priority: Scheduling priority (lower number = higher priority).
-        must_complete: If ``True`` the task is not cancelled during shutdown.
-        created_at: ``perf_counter`` timestamp of submission.
-        group_id: Group this task belongs to, or ``None``.
-        detached: Whether the result is excluded from ``run()`` aggregation.
-        scheduled_for: Absolute ``perf_counter`` target start time, or ``None``.
-    """
+    _pending_error = RuntimeError
+    _cancelled_error = CancelledError
 
-    __slots__ = (
-        "task_id",
-        "name",
-        "priority",
-        "must_complete",
-        "created_at",
-        "group_id",
-        "detached",
-        "scheduled_for",
-        "_attempts",
-        "_cancel_fn",
-        "_condition",
-        "_result",
-        "_status",
-        "_started_at",
-    )
-
-    def __init__(
-        self,
-        *,
-        task_id: str,
-        name: str,
-        priority: int,
-        must_complete: bool,
-        created_at: float,
-        cancel_fn: Any,
-        group_id: str | None = None,
-        detached: bool = False,
-        scheduled_for: float | None = None,
-    ) -> None:
-        """Create a handle.  Called internally by the queue.
-
-        Args:
-            task_id: UUID hex string for the task.
-            name: Human-readable task name.
-            priority: Scheduling priority integer.
-            must_complete: Whether to protect the task from cancellation.
-            created_at: ``perf_counter`` submission timestamp.
-            cancel_fn: Callable ``(task_id) -> bool`` used by :meth:`cancel`.
-            group_id: Optional group this task belongs to.
-            detached: If ``True``, excluded from ``run()`` aggregation.
-            scheduled_for: Absolute ``perf_counter`` start time, or ``None``.
-        """
-        self.task_id = task_id
-        self.name = name
-        self.priority = priority
-        self.must_complete = must_complete
-        self.created_at = created_at
-        self.group_id = group_id
-        self.detached = detached
-        self.scheduled_for = scheduled_for
-        self._attempts = 0
-        self._cancel_fn = cancel_fn
-        self._condition = threading.Condition()
-        self._result: TaskResult | None = None
-        self._status: TaskStatus = "pending"
-        self._started_at: float | None = None
-
-    def __repr__(self) -> str:
-        return f"SyncTaskHandle({self.name!r}, status={self.status!r}, id={self.task_id[:8]})"
-
-    @property
-    def status(self) -> TaskStatus:
-        """Current lifecycle status of the task."""
-        return self._status
-
-    @property
-    def attempts(self) -> int:
-        """Number of execution attempts made so far."""
-        return self._attempts
-
-    def done(self) -> bool:
-        """Return ``True`` if the task has a final result."""
-        with self._condition:
-            return self._result is not None
-
-    def cancelled(self) -> bool:
-        """Return ``True`` if the task was cancelled."""
-        with self._condition:
-            return self._result is not None and self._result.status == "cancelled"
-
-    def exception(self) -> BaseException | None:
-        """Return the exception from a failed task, or ``None``.
-
-        Raises:
-            RuntimeError: If the task has not finished yet.
-        """
-        return self.result().exception
-
-    def result(self) -> TaskResult:
-        """Return the :class:`~osiiso.TaskResult` for this task.
-
-        Raises:
-            RuntimeError: If the task has not finished yet.
-        """
-        with self._condition:
-            if self._result is None:
-                raise RuntimeError("result not ready")
-            return self._result
-
-    def value(self) -> Any:
-        """Return the callable's return value, re-raising on failure or cancellation.
-
-        Returns:
-            The value returned by the task callable.
-
-        Raises:
-            RuntimeError: If the task has not finished yet.
-            concurrent.futures.CancelledError: If the task was cancelled.
-            Exception: The exception originally raised by the task.
-        """
-        r = self.result()
-        if r.status == "cancelled":
-            raise CancelledError(r.message)
-        if r.exception is not None:
-            raise r.exception
-        return r.value
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._cond = threading.Condition(self._lock)
 
     def wait(self, timeout: float | None = None) -> TaskResult:
         """Block until the task finishes and return its :class:`~osiiso.TaskResult`.
 
-        Args:
-            timeout: Maximum seconds to wait.  ``None`` means wait indefinitely.
-
-        Returns:
-            The final :class:`~osiiso.TaskResult` for this task.
-
         Raises:
-            TimeoutError: If *timeout* expires before the task finishes.
+            TimeoutError: If *timeout* seconds elapse first.
         """
-        with self._condition:
-            if self._result is None:
-                ok = self._condition.wait_for(lambda: self._result is not None, timeout=timeout)
-                if not ok:
-                    raise TimeoutError("result not ready")
+        with self._cond:
+            if not self._cond.wait_for(lambda: self._result is not None, timeout=timeout):
+                raise TimeoutError("result not ready")
             return self._result  # type: ignore[return-value]
 
-    def cancel(self) -> bool:
-        """Request cancellation of this task.
-
-        Returns:
-            ``True`` if the cancellation request was accepted, ``False`` if
-            the task was already done.
-        """
-        if self.done():
-            return False
-        return bool(self._cancel_fn(self.task_id))
-
-    def _mark_running(self) -> None:
-        self._attempts += 1
-        self._status = "running"
-        if self._started_at is None:
-            self._started_at = time.perf_counter()
-
-    def _mark_retrying(self) -> None:
-        self._status = "retrying"
-
-    def _mark_finished(self, result: TaskResult) -> None:
-        with self._condition:
-            if self._result is not None:
-                return
-            self._result = result
-            self._status = result.status
-            self._condition.notify_all()
+    def _finish_locked(self) -> None:
+        self._cond.notify_all()

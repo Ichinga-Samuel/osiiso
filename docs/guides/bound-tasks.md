@@ -70,7 +70,7 @@ fetch.map(urls, timeout=30)
 
 ## How It Works
 
-Under the hood, `@q.task()` wraps the function in a `_BoundTask` object:
+Under the hood, `@q.task()` wraps the function in a `BoundTask` object:
 
 1. The decorator resolves options from `opts=` and keyword arguments
 2. Each call to the bound task calls `queue._enqueue()` with the resolved options
@@ -78,7 +78,7 @@ Under the hood, `@q.task()` wraps the function in a `_BoundTask` object:
 
 ```mermaid
 graph LR
-    D["@q.task(retries=2)"] --> BT["_BoundTask"]
+    D["@q.task(retries=2)"] --> BT["BoundTask"]
     BT -->|"fetch(url)"| S["q._enqueue(fn, args, opts)"]
     BT -->|"fetch.map(urls)"| M["q.map(fn, urls, opts=opts)"]
     BT -->|"fetch.group(urls)"| G["q.group(tasks, opts=opts)"]

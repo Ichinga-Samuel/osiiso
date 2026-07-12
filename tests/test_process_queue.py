@@ -131,38 +131,48 @@ class TestResetAndClosed:
 # ---------------------------------------------------------------------------
 
 
-_flaky_counter = None
-
-
-def _flaky_init():
-    """Reset the flaky counter in the parent process."""
-    global _flaky_counter
-    import multiprocessing
-    _flaky_counter = multiprocessing.Value("i", 0)
+_ATTEMPTS = 0
 
 
 def _flaky_task():
-    """Fail the first time, succeed on retry.
+    """Fail the first time, succeed on the retry.
 
-    Uses a file-based counter because subprocess state is isolated.
+    Relies on the persistent pool: the retry runs in the *same* subprocess,
+    so this module-global attempt counter survives between attempts.
     """
-    import tempfile
-    import os
-    marker = os.path.join(tempfile.gettempdir(), "_osiiso_flaky_marker.txt")
-    if not os.path.exists(marker):
-        with open(marker, "w") as f:
-            f.write("1")
+    global _ATTEMPTS
+    _ATTEMPTS += 1
+    if _ATTEMPTS < 2:
         raise ValueError("first attempt fails")
-    os.remove(marker)
     return "recovered"
 
 
-def _cleanup_flaky_marker():
-    import tempfile
+def _pid():
     import os
-    marker = os.path.join(tempfile.gettempdir(), "_osiiso_flaky_marker.txt")
-    if os.path.exists(marker):
-        os.remove(marker)
+
+    return os.getpid()
+
+
+def _crash_hard():
+    import os
+
+    os._exit(13)
+
+
+_INIT_TAG = None
+
+
+def _proc_init(tag):
+    global _INIT_TAG
+    _INIT_TAG = tag
+
+
+def _read_init_tag():
+    return _INIT_TAG
+
+
+def _return_lambda():
+    return lambda x: x  # not picklable
 
 
 def _greet(name, greeting="Hello"):
@@ -186,16 +196,12 @@ def _return_arg(x):
 
 class TestRetryExtended:
     def test_retry_succeeds_eventually(self):
-        """Task fails then succeeds on retry."""
-        _cleanup_flaky_marker()
-        try:
-            q = ProcessQueue(workers=1)
-            q.submit(_flaky_task, retries=2)
-            summary = q.run()
-            assert summary.ok
-            assert summary.values == ("recovered",)
-        finally:
-            _cleanup_flaky_marker()
+        """Task fails then succeeds on retry (same pooled subprocess)."""
+        q = ProcessQueue(workers=1)
+        q.submit(_flaky_task, retries=2)
+        summary = q.run()
+        assert summary.ok
+        assert summary.values == ("recovered",)
 
 
 # -- Fail policies ------------------------------------------------------------
@@ -336,20 +342,16 @@ class TestHooks:
 
     def test_on_retry(self):
         """on_retry callback fires on retries."""
-        _cleanup_flaky_marker()
         retry_calls = []
 
         def on_retry(handle, exc):
             retry_calls.append(type(exc).__name__)
 
-        try:
-            q = ProcessQueue(workers=1, on_retry=on_retry)
-            q.submit(_flaky_task, retries=2)
-            q.run()
-            assert len(retry_calls) >= 1
-            assert retry_calls[0] == "ValueError"
-        finally:
-            _cleanup_flaky_marker()
+        q = ProcessQueue(workers=1, on_retry=on_retry)
+        q.submit(_flaky_task, retries=2)
+        q.run()
+        assert len(retry_calls) >= 1
+        assert retry_calls[0] == "ValueError"
 
 
 # -- map with tuples ----------------------------------------------------------
@@ -528,7 +530,7 @@ class TestSchedulingProcess:
 class TestMustCompleteProcess:
     def test_must_complete_survives_timeout(self):
         """A must_complete task finishes even when the queue times out."""
-        q = ProcessQueue(workers=2, on_exit="complete_priority")
+        q = ProcessQueue(workers=2, on_timeout="complete")
         q.submit(slow, 10)                              # will be cancelled
         h = q.submit(_important_work, must_complete=True)  # should survive
         summary = q.run(timeout=0.5)
@@ -560,3 +562,68 @@ class TestHandleException:
         exc = h.exception()
         assert isinstance(exc, ValueError)
         assert str(exc) == "boom"
+
+
+# -- Persistent pool behaviour --------------------------------------------------
+
+
+class TestPersistentPool:
+    def test_worker_process_is_reused(self):
+        """Sequential tasks on one worker run in the same subprocess."""
+        q = ProcessQueue(workers=1)
+        q.map(_pid, [(), (), (), ()])
+        summary = q.run()
+        assert summary.ok
+        assert len(set(summary.values)) == 1  # one PID for all four tasks
+
+    def test_worker_crash_is_reported_and_pool_recovers(self):
+        """A hard-crashing task fails cleanly; the next task still runs."""
+        q = ProcessQueue(workers=1)
+        crash = q.submit(_crash_hard)
+        ok = q.submit(double, 4)
+        summary = q.run()
+        assert summary.failed == 1
+        assert summary.succeeded == 1
+        assert isinstance(crash.exception(), RuntimeError)
+        assert "worker process died" in str(crash.exception())
+        assert ok.value() == 8
+
+    def test_initializer_runs_in_subprocess(self):
+        """initializer/initargs run inside the pool subprocess before tasks."""
+        q = ProcessQueue(workers=1, initializer=_proc_init, initargs=("configured",))
+        h = q.submit(_read_init_tag)
+        summary = q.run()
+        assert summary.ok
+        assert h.value() == "configured"
+
+    def test_unpicklable_result_reports_failure(self):
+        """A result that cannot be pickled is reported as a task failure."""
+        q = ProcessQueue(workers=1)
+        h = q.submit(_return_lambda)
+        summary = q.run()
+        assert summary.failed == 1
+        assert "pickl" in str(h.exception()).lower()
+
+
+# -- pmap shortcut ----------------------------------------------------------------
+
+
+class TestPmap:
+    def test_pmap_ordered_values(self):
+        from osiiso import pmap
+
+        assert pmap(double, [3, 1, 2], workers=2) == (6, 2, 4)
+
+
+# -- Detached tasks -----------------------------------------------------------------
+
+
+class TestDetachedProcess:
+    def test_detached_excluded_from_summary(self):
+        q = ProcessQueue(workers=2)
+        h = q.submit(double, 5, detached=True)
+        q.submit(double, 10)
+        summary = q.run()
+        assert summary.total_submitted == 1
+        assert summary.values == (20,)
+        assert h.value() == 10

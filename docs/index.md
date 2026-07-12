@@ -58,8 +58,11 @@ print(osiiso.run(main()))
 - :material-sort-ascending: **Priority scheduling** — Lower priority numbers execute first
 - :material-refresh: **Retries with backoff** — Configurable retry count, delay, and exponential backoff
 - :material-timer-outline: **Timeouts** — Per-task and queue-level time limits
+- :material-speedometer-slow: **Rate limiting** — `rate=` / `burst=` cap task attempts per second on every backend
+- :material-clock-outline: **Scheduling** — `delay=` / `run_at=` tasks never occupy a worker while waiting
 - :material-shield-check: **Graceful shutdown** — `must_complete` tasks are protected during shutdown
 - :material-group: **Batch workflows** — `submit()`, `map()`, and `group()` for flexible task submission
+- :material-flash: **One-shot helpers** — `amap()`, `tmap()`, and `pmap()` return ordered values in one call
 - :material-clipboard-check: **Structured results** — `RunSummary` and immutable `TaskResult` records
 - :material-hook: **Lifecycle hooks** — `on_start`, `on_complete`, and `on_retry` callbacks
 - :material-speedometer: **uvloop support** — Optional acceleration through `osiiso.run()`

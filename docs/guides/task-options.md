@@ -57,7 +57,8 @@ q.submit(fetch, url2, opts=urgent)     # priority=0
 | `run_at` | `float \| None` | `None` | Execute at this absolute `time.time()` timestamp. |
 | `name` | `str \| None` | `None` | Custom name used in results, hooks, and display. |
 | `group_id` | `str \| None` | `None` | Associate the task with a named group. |
-| `detached` | `bool` | `False` | If `True`, the task's result is excluded from `run()` aggregation. |
+| `detached` | `bool` | `False` | If `True`, the task still runs but its result is excluded from the `RunSummary`; observe it via its handle. |
+| `metadata` | `Any` | `None` | Arbitrary user data carried onto the handle and the `TaskResult`. |
 
 ---
 

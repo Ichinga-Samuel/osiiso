@@ -23,6 +23,7 @@ TaskOptions(
     name: str | None = None,
     group_id: str | None = None,
     detached: bool = False,
+    metadata: Any = None,
 )
 ```
 
@@ -45,7 +46,8 @@ after construction.
 | `run_at` | `float \| None` | `None` | Execute at this `time.time()` timestamp. |
 | `name` | `str \| None` | `None` | Custom name for results and hooks. |
 | `group_id` | `str \| None` | `None` | Associate with a named group. |
-| `detached` | `bool` | `False` | Exclude from `run()` result aggregation. |
+| `detached` | `bool` | `False` | Task still runs (and `run()` waits for it), but its result is excluded from the `RunSummary`; observe it via its handle. |
+| `metadata` | `Any` | `None` | Arbitrary user data carried onto the handle and the `TaskResult`. |
 
 ---
 

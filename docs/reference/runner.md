@@ -32,7 +32,8 @@ osiiso.run(coro, *, use_uvloop=None, debug=False) -> T
 | `True` | No | Raises `ImportError` |
 | `False` | Any | Uses stdlib asyncio |
 
-The uvloop policy is restored to default after `run()` completes to avoid leaking globally.
+uvloop is engaged through `asyncio.run(..., loop_factory=uvloop.new_event_loop)`,
+so the global event-loop policy is never modified.
 
 ---
 

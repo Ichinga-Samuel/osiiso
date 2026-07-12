@@ -144,14 +144,13 @@ summary = await q.run(fail_policy="fail_first")  # Override for this run
 
 ---
 
-## Shutdown Behavior
+## Timeout Behavior
 
-The `on_exit` parameter controls what happens when a timeout or forced shutdown
-occurs:
+The `on_timeout` parameter controls what happens when a run times out:
 
-### Complete Priority (Default)
+### Complete (Default)
 
-`on_exit="complete_priority"` cancels ordinary pending work but lets
+`on_timeout="complete"` cancels ordinary pending work but lets
 `must_complete=True` tasks finish:
 
 ```python
@@ -164,11 +163,11 @@ summary = q.run(timeout=5)
 
 ### Cancel
 
-`on_exit="cancel"` cancels **everything** it can, including `must_complete`
+`on_timeout="cancel"` cancels **everything**, including `must_complete`
 tasks:
 
 ```python
-q = osiiso.AsyncQueue(on_exit="cancel")
+q = osiiso.AsyncQueue(on_timeout="cancel")
 ```
 
 ---

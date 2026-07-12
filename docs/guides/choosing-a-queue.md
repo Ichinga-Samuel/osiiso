@@ -13,6 +13,11 @@ learn one, switching between execution models requires minimal changes.
 | Blocking synchronous work | **`ThreadQueue`** | File operations, blocking SDKs, SQLite writes, sync integrations |
 | CPU-heavy computation | **`ProcessQueue`** | Ranking, parsing, scoring, transformations, analytics |
 
+!!! tip "Just mapping a function over inputs?"
+    Each backend has a one-shot helper — `amap()` (async), `tmap()` (threads),
+    `pmap()` (processes) — that builds the queue, runs it, and returns values
+    in input order. See the [Shortcuts reference](../reference/shortcuts.md).
+
 ---
 
 ## AsyncQueue
@@ -58,7 +63,7 @@ with osiiso.ThreadQueue(workers=4) as q:
 
 - Only accepts sync callables (raises `TypeError` for coroutines)
 - Handles are **blocking**: `result = handle.wait(timeout=5)`
-- Additional constructor option: `poll=0.05` (cancellation check interval)
+- Additional constructor options: `initializer=None, initargs=()` (run once per worker thread)
 
 ---
 
@@ -79,10 +84,12 @@ if __name__ == "__main__":
 
 **Key behaviors:**
 
-- Runs work in subprocesses using `multiprocessing`
+- Runs work in **persistent** subprocesses — each worker's process is reused
+  across tasks and respawned automatically if it crashes or is cancelled
 - Supports coroutine functions (executed via `asyncio.run()` in the subprocess)
 - Handles are **blocking**: same as `ThreadQueue`
-- Additional constructor options: `poll=0.05`, `context=None`
+- Additional constructor options: `context=None`, `initializer=None, initargs=()`
+  (the initializer runs inside each subprocess)
 
 !!! important "Pickling requirements"
     Process functions and arguments **must be pickleable**. Use top-level
@@ -98,11 +105,13 @@ All three queues accept these constructor parameters:
 ```python
 queue = osiiso.AsyncQueue(
     workers=4,              # Number of worker coroutines/threads/processes
-    size=0,                 # Max items in priority queue (0 = unbounded)
+    size=0,                 # Max outstanding tasks (0 = unbounded)
     timeout=None,           # Per-run time limit in seconds
     mode="finite",          # "finite" or "infinite"
     fail_policy="continue", # "continue" or "fail_first"
-    on_exit="complete_priority",  # "complete_priority" or "cancel"
+    on_timeout="complete",  # "complete" or "cancel"
+    rate=None,              # Max task attempts per second (None = unlimited)
+    burst=1,                # Attempts that may start back-to-back after idle
     on_start=None,          # Callback: (handle) -> None
     on_complete=None,       # Callback: (result) -> None
     on_retry=None,          # Callback: (handle, exception) -> None
@@ -112,11 +121,13 @@ queue = osiiso.AsyncQueue(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `workers` | `int \| None` | `None` | Fixed worker count. `None` = auto-scale |
-| `size` | `int` | `0` | Max queue capacity (`0` = unbounded) |
+| `size` | `int` | `0` | Max outstanding tasks (`0` = unbounded). Sync queues block `submit()` when full; `AsyncQueue` raises `QueueFullError` |
 | `timeout` | `float \| None` | `None` | Queue-level run timeout |
 | `mode` | `str` | `"finite"` | `"finite"` drains and stops; `"infinite"` runs until shutdown |
-| `fail_policy` | `str` | `"continue"` | `"continue"` or `"fail_first"` |
-| `on_exit` | `str` | `"complete_priority"` | Shutdown behavior on timeout |
+| `fail_policy` | `str` | `"continue"` | `"continue"` or `"fail_first"` (spares `must_complete` tasks) |
+| `on_timeout` | `str` | `"complete"` | On run timeout: `"complete"` lets `must_complete` tasks finish; `"cancel"` stops all |
+| `rate` | `float \| None` | `None` | Max task attempts per second across all workers |
+| `burst` | `int` | `1` | With `rate`, attempts that may start back-to-back after idle |
 | `on_start` | `callable` | `None` | Called when a task begins |
 | `on_complete` | `callable` | `None` | Called when a task finishes |
 | `on_retry` | `callable` | `None` | Called before a retry attempt |

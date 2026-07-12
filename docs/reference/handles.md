@@ -26,6 +26,7 @@ Returned by [`AsyncQueue.submit()`](asyncqueue.md). **Awaitable** — use
 | `done()` | `bool` | `True` if task has a final result |
 | `cancelled()` | `bool` | `True` if status is `"cancelled"` |
 | `exception()` | `BaseException \| None` | The exception, or `None`; raises if pending |
+| `add_done_callback(fn)` | `None` | Call `fn(handle)` when the task finishes (immediately if already done) |
 
 ### Properties
 
@@ -39,6 +40,7 @@ Returned by [`AsyncQueue.submit()`](asyncqueue.md). **Awaitable** — use
 | `group_id` | `str \| None` | Group identifier |
 | `detached` | `bool` | Excluded from `run()` aggregation |
 | `scheduled_for` | `float \| None` | Absolute `perf_counter` target start time |
+| `metadata` | `Any` | User data from `TaskOptions.metadata` |
 | `status` | `str` | `"pending"`, `"running"`, `"retrying"`, `"succeeded"`, `"failed"`, or `"cancelled"` |
 | `attempts` | `int` | Number of execution attempts |
 
@@ -73,6 +75,7 @@ thread.
 | `done()` | `bool` | `True` if task has a final result |
 | `cancelled()` | `bool` | `True` if status is `"cancelled"` |
 | `exception()` | `BaseException \| None` | The exception, or `None`; raises if pending |
+| `add_done_callback(fn)` | `None` | Call `fn(handle)` when the task finishes (immediately if already done) |
 
 ### Properties
 

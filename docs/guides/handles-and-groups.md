@@ -71,13 +71,24 @@ handles = q.map(fetch, urls)
 await q.start()
 
 try:
-    async for handle in osiiso.AsyncQueue.as_completed(handles):
+    async for handle in osiiso.as_completed(handles):
         print(handle.name, handle.value())
 finally:
     await q.shutdown()
 ```
 
 Handles are yielded in **completion order** (fastest first), not submission order.
+
+For sync queues, `iter_completed()` is the blocking equivalent:
+
+```python
+with osiiso.ThreadQueue(workers=4) as q:
+    handles = q.map(read_file, paths)
+    for handle in osiiso.iter_completed(handles, timeout=30):
+        print(handle.name, handle.value())
+```
+
+Both are also available on groups as `group.as_completed()`.
 
 ---
 

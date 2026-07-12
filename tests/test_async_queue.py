@@ -6,7 +6,7 @@ from functools import partial
 
 import pytest
 
-from osiiso import AsyncQueue, ClosedError, ExecutionError, TaskHandle, TaskOptions
+from osiiso import AsyncQueue, ClosedError, ExecutionError, QueueFullError, TaskHandle, TaskOptions, amap, as_completed
 
 
 async def double(x):
@@ -309,10 +309,16 @@ class TestAsCompleted:
 
         results = []
         await q.start()
-        async for h in AsyncQueue.as_completed(handles):
+        async for h in as_completed(handles):
             results.append(h.value())
         assert set(results) == {2, 4, 6}
         await q.shutdown()
+
+    async def test_group_as_completed(self):
+        async with AsyncQueue(workers=4) as q:
+            g = q.group(double, [1, 2, 3])
+            results = [h.value() async for h in g.as_completed()]
+        assert set(results) == {2, 4, 6}
 
 
 # -- Summary -------------------------------------------------------------------
@@ -522,12 +528,10 @@ class TestRetryMechanics:
 
 class TestMustComplete:
     async def test_must_complete_survives_cancel(self):
-        """must_complete tasks survive timeout shutdown (default on_exit policy)."""
-        q = AsyncQueue(workers=2, on_exit="complete_priority")
+        """must_complete tasks survive a run timeout under the default policy."""
+        q = AsyncQueue(workers=2, on_timeout="complete")
         q.submit(slow, 0.1, must_complete=True)
         q.submit(slow, 10)  # long task — will be cancelled on timeout
-        # The timeout fires, _handle_timeout calls _cancel_active(force=False)
-        # which skips tasks with must_complete=True.
         summary = await q.run(timeout=0.5)
         mc_results = [r for r in summary.results if r.must_complete]
         assert len(mc_results) == 1
@@ -539,17 +543,17 @@ class TestMustComplete:
 
 class TestDetached:
     async def test_detached_tasks_excluded(self):
-        """Detached tasks have detached=True in results."""
+        """Detached tasks run (and are awaited) but stay out of the summary."""
         q = AsyncQueue(workers=2)
-        q.submit(double, 5, detached=True)
+        h = q.submit(double, 5, detached=True)
         q.submit(double, 10)
         summary = await q.run()
-        detached_results = [r for r in summary.results if r.detached]
-        assert len(detached_results) == 1
-        assert detached_results[0].value == 10  # double(5) = 10
-        non_detached = [r for r in summary.results if not r.detached]
-        assert len(non_detached) == 1
-        assert non_detached[0].value == 20  # double(10) = 20
+        assert summary.total_submitted == 1
+        assert summary.values == (20,)
+        # The detached task still executed and is observable via its handle.
+        assert h.done()
+        assert h.value() == 10
+        assert any(r.detached for r in q.results)
 
 
 # -- Stats property ------------------------------------------------------------
@@ -561,9 +565,10 @@ class TestStatsProperty:
         q = AsyncQueue(workers=1)
         s = q.stats
         assert isinstance(s, dict)
-        assert set(s.keys()) == {"pending", "active", "completed", "workers", "closed"}
+        assert set(s.keys()) == {"pending", "active", "scheduled", "completed", "workers", "closed"}
         assert s["pending"] == 0
         assert s["active"] == 0
+        assert s["scheduled"] == 0
         assert s["completed"] == 0
         assert s["closed"] is False
 
@@ -647,10 +652,10 @@ class TestCallbackErrors:
 # -- on_exit="cancel" shutdown policy ------------------------------------------
 
 
-class TestOnExitCancel:
+class TestOnTimeoutCancel:
     async def test_cancel_policy_cancels_long_task(self):
-        """on_exit='cancel' cancels all tasks when the run times out."""
-        q = AsyncQueue(workers=2, on_exit="cancel")
+        """on_timeout='cancel' cancels all tasks when the run times out."""
+        q = AsyncQueue(workers=2, on_timeout="cancel")
         h_slow = q.submit(slow, 10)
         h_fast = q.submit(double, 5)
         summary = await q.run(timeout=0.3)
@@ -719,3 +724,207 @@ class TestRunAtScheduling:
         assert summary.ok
         assert h.value() == 14
         assert elapsed >= 0.25
+
+
+# -- Graceful drain on exit (regression: tasks were skipped on __aexit__) -------
+
+
+class TestDrainOnExit:
+    async def test_context_exit_drains_pending_tasks(self):
+        """Leaving the context without run() executes pending tasks, not skips them."""
+        seen = []
+
+        async def collect(x):
+            seen.append(x)
+            return x
+
+        async with AsyncQueue(workers=2) as q:
+            handles = q.map(collect, [1, 2, 3])
+        assert sorted(seen) == [1, 2, 3]
+        assert all(h.status == "succeeded" for h in handles)
+
+    async def test_graceful_shutdown_waits_for_scheduled(self):
+        """shutdown() waits for delayed tasks to release and execute."""
+        q = AsyncQueue(workers=1)
+        h = q.submit(double, 4, delay=0.15)
+        await q.start()
+        await q.shutdown()
+        assert h.value() == 8
+
+
+# -- Bounded queue ---------------------------------------------------------------
+
+
+class TestBoundedQueue:
+    async def test_submit_raises_when_full(self):
+        q = AsyncQueue(workers=1, size=2)
+        q.submit(slow, 5)
+        q.submit(slow, 5)
+        with pytest.raises(QueueFullError):
+            q.submit(slow, 5)
+        q.cancel()
+
+    async def test_space_frees_after_completion(self):
+        q = AsyncQueue(workers=1, size=1)
+        q.submit(double, 1)
+        await q.run()
+        h = q.submit(double, 2)
+        await q.run()
+        assert h.value() == 4
+
+
+# -- Rate limiting ----------------------------------------------------------------
+
+
+class TestRateLimit:
+    async def test_rate_spaces_attempts(self):
+        """rate=20 means at most ~20 task starts per second."""
+        stamps = []
+
+        async def mark():
+            stamps.append(time.perf_counter())
+
+        q = AsyncQueue(workers=4, rate=20)
+        q.map(mark, [()] * 6)
+        summary = await q.run()
+        assert summary.ok
+        elapsed = max(stamps) - min(stamps)
+        # 6 tasks at 20/s need at least ~0.25s from first to last start.
+        assert elapsed >= 0.2
+
+    async def test_burst_allows_initial_batch(self):
+        stamps = []
+
+        async def mark():
+            stamps.append(time.perf_counter())
+
+        q = AsyncQueue(workers=4, rate=5, burst=4)
+        q.map(mark, [()] * 4)
+        summary = await q.run()
+        assert summary.ok
+        assert max(stamps) - min(stamps) < 0.5  # all four fit in the burst
+
+    def test_invalid_rate_rejected(self):
+        with pytest.raises(ValueError, match="rate must be > 0"):
+            AsyncQueue(rate=0)
+        with pytest.raises(ValueError, match="burst must be >= 1"):
+            AsyncQueue(rate=1, burst=0)
+
+
+# -- Scheduled tasks do not block workers ------------------------------------------
+
+
+class TestSchedulerNonBlocking:
+    async def test_delayed_task_does_not_starve_ready_tasks(self):
+        """With one worker, an immediate task runs before a long-delayed one."""
+        order = []
+
+        async def mark(tag):
+            order.append(tag)
+
+        q = AsyncQueue(workers=1)
+        q.submit(mark, "delayed", delay=0.3)
+        q.submit(mark, "immediate")
+        start = time.perf_counter()
+        await q.run()
+        assert order == ["immediate", "delayed"]
+        assert time.perf_counter() - start >= 0.25
+
+
+# -- Priority ordering ---------------------------------------------------------------
+
+
+class TestPriorityOrdering:
+    async def test_lower_priority_value_runs_first(self):
+        order = []
+
+        async def mark(tag):
+            order.append(tag)
+
+        q = AsyncQueue(workers=1)
+        q.submit(mark, "low", priority=9)
+        q.submit(mark, "high", priority=1)
+        q.submit(mark, "mid", priority=5)
+        await q.run()
+        assert order == ["high", "mid", "low"]
+
+
+# -- Handle done-callbacks -------------------------------------------------------------
+
+
+class TestDoneCallbacks:
+    async def test_callback_fires_on_completion(self):
+        fired = []
+        async with AsyncQueue(workers=1) as q:
+            h = q.submit(double, 3)
+            h.add_done_callback(lambda handle: fired.append(handle.value()))
+            await h
+        assert fired == [6]
+
+    async def test_callback_fires_immediately_when_done(self):
+        fired = []
+        async with AsyncQueue(workers=1) as q:
+            h = q.submit(double, 3)
+            await h
+            h.add_done_callback(lambda handle: fired.append(handle.value()))
+        assert fired == [6]
+
+
+# -- Metadata passthrough ----------------------------------------------------------------
+
+
+class TestMetadata:
+    async def test_metadata_on_handle_and_result(self):
+        q = AsyncQueue(workers=1)
+        h = q.submit(double, 2, metadata={"source": "unit-test"})
+        summary = await q.run()
+        assert h.metadata == {"source": "unit-test"}
+        assert summary.results[0].metadata == {"source": "unit-test"}
+
+
+# -- Awaitable submissions ----------------------------------------------------------------
+
+
+class TestAwaitableSubmission:
+    async def test_bare_awaitable_runs(self):
+        q = AsyncQueue(workers=1)
+        h = q.submit(double(21))
+        await q.run()
+        assert h.value() == 42
+
+    async def test_bare_awaitable_with_retries_rejected(self):
+        q = AsyncQueue(workers=1)
+        coro = double(1)
+        try:
+            with pytest.raises(ValueError, match="cannot be retried"):
+                q.submit(coro, retries=2)
+        finally:
+            coro.close()
+
+
+# -- amap shortcut ---------------------------------------------------------------------------
+
+
+class TestAmap:
+    async def test_amap_returns_ordered_values(self):
+        values = await amap(double, [3, 1, 2], workers=4)
+        assert values == (6, 2, 4)
+
+    async def test_amap_raises_on_failure(self):
+        with pytest.raises(ExecutionError):
+            await amap(fail_always, ["a", "b"], workers=2)
+
+
+# -- fail_first spares must_complete ----------------------------------------------------------
+
+
+class TestFailFirstMustComplete:
+    async def test_must_complete_survives_fail_first(self):
+        q = AsyncQueue(workers=1, fail_policy="fail_first")
+        q.submit(fail_always)
+        protected = q.submit(slow, 0.05, must_complete=True)
+        expendable = q.submit(double, 1)
+        summary = await q.run()
+        assert summary.failed == 1
+        assert protected.status == "succeeded"
+        assert expendable.status == "cancelled"

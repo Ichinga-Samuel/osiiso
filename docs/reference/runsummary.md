@@ -53,5 +53,5 @@ from osiiso import RunSummary
 
 | Method | Description |
 |--------|-------------|
-| `raise_for_errors()` | Raise `ExecutionError` if any task failed |
+| `raise_for_errors(include_cancelled=False)` | Raise `ExecutionError` if any task failed (or was cancelled, with `include_cancelled=True`) |
 | `display()` | Print human-readable summary to stdout |
