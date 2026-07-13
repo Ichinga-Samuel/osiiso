@@ -11,6 +11,7 @@ Complete reference for all public classes, methods, and attributes exported by
 from osiiso import (
     # Core queues
     AsyncQueue,
+    SharedQueue,
     ThreadQueue,
     ProcessQueue,
 
@@ -52,6 +53,7 @@ from osiiso import (
 | Class | Description |
 |-------|-------------|
 | [AsyncQueue](asyncqueue.md) | Asyncio-native task queue |
+| [SharedQueue](sharedqueue.md) | `AsyncQueue` with thread-safe submission |
 | [ThreadQueue](threadqueue.md) | Thread-based queue for blocking work |
 | [ProcessQueue](processqueue.md) | Process-based queue for CPU-heavy work |
 

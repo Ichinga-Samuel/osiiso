@@ -12,7 +12,7 @@ Structured task queues for Python across `asyncio`, threads, and processes.
 
 `osiiso` gives you one compact queue API for three execution backends:
 
-- `AsyncQueue` for coroutine-heavy I/O and async integrations.
+- `AsyncQueue` for coroutine-heavy I/O and async integrations (`SharedQueue` adds thread-safe submission onto one shared event loop).
 - `ThreadQueue` for blocking I/O, synchronous SDKs, filesystem work, and SQLite writes.
 - `ProcessQueue` for CPU-heavy work that benefits from separate subprocesses.
 
@@ -70,6 +70,7 @@ The project targets Python 3.13 and newer.
 | Workload | Queue | Good for |
 | --- | --- | --- |
 | Coroutine-based I/O | `AsyncQueue` | HTTP clients, async databases, websockets, API fan-out |
+| Coroutine I/O fed from threads | `SharedQueue` | One event loop serving producers on other threads |
 | Blocking synchronous work | `ThreadQueue` | File operations, blocking SDKs, SQLite writes, sync integrations |
 | CPU-heavy functions | `ProcessQueue` | Ranking, parsing, scoring, transformations, analytics |
 

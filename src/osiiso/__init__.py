@@ -24,12 +24,14 @@ from .loop import run
 from .options import TaskOptions
 from .processqueue import ProcessQueue
 from .result import RunSummary, TaskResult
+from .sharedqueue import SharedQueue
 from .shortcuts import amap, pmap, tmap
 from .threadqueue import ThreadQueue
 
 __all__ = [
     # Core queues
     "AsyncQueue",
+    "SharedQueue",
     "ThreadQueue",
     "ProcessQueue",
     # Handles

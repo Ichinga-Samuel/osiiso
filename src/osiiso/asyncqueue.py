@@ -61,7 +61,8 @@ class AsyncQueue(_SubmitPlane):
 
     Note:
         The queue is bound to a single event loop; ``submit()`` must be called
-        from the loop's thread.  ``handle.cancel()`` and ``queue.cancel()``
+        from the loop's thread (use :class:`~osiiso.SharedQueue` to submit
+        from other threads).  ``handle.cancel()`` and ``queue.cancel()``
         are safe from any thread.
     """
 

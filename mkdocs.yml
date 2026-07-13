@@ -62,6 +62,7 @@ nav:
   - API Reference:
       - Overview: reference/index.md
       - AsyncQueue: reference/asyncqueue.md
+      - SharedQueue: reference/sharedqueue.md
       - ThreadQueue: reference/threadqueue.md
       - ProcessQueue: reference/processqueue.md
       - TaskOptions: reference/taskoptions.md
