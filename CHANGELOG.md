@@ -12,13 +12,35 @@ This project follows semantic versioning where practical:
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-26
+
 ### Added
 
+- **`Checkpoint`** — completion tracking keyed by input, for resumable fan-out. `map()`, `group()`, `amap()`, `tmap()`, and `pmap()` accept `checkpoint=`, `key=`, and `namespace=`; inputs already recorded are not submitted, returning finished handles that carry the stored value, so results still line up 1:1 with the input. Backed by a single SQLite file in WAL mode, so completions survive a hard process kill. Only successes are recorded, so failed and cancelled tasks run again on the next pass. This is completion tracking, not a durable task queue: the callable is never persisted.
+- `Checkpoint` is exported from the package root; the `Hit` record it returns stays in `osiiso.checkpoint` to keep the top-level namespace clean.
+- Resumable fetches in the Hacker News showcase, a checkpoint section in the feature gallery, and `--checkpoint` / `--no-checkpoint` / `--reset-checkpoint` flags on the showcase CLI.
+- Documentation: a "Resumable Runs" guide and a `Checkpoint` API reference page.
 - Public README refresh with banner artwork, badges, queue examples, development workflow, and API overview.
 - Community documentation for contributing, security reporting, support, and project conduct.
 - GitHub issue templates and pull request template.
 
 ---
+
+### Changed
+
+- Completed the Google-style docstrings across the package — `Args`, `Returns`, and `Raises` sections are now filled in on public methods, module-level helpers, and dunder methods. No behaviour changes.
+
+### Compatibility
+
+- Backward compatible with 1.0.x. `checkpoint`, `key`, and `namespace` are keyword-only and default to `None`; the code paths taken without them are unchanged. In 1.0.x those names raised `TypeError: Unknown task option(s): ...`, so no working call can break. `sqlite3` is imported lazily inside `Checkpoint`, so `import osiiso` still succeeds without it.
+
+## [1.0.1] - 2026-07-13
+
+Released to PyPI but not previously recorded here.
+
+### Fixed
+
+- Repaired mojibake in four error messages, where a UTF-8 em dash had been written as `â€”` (`ThreadQueue._validate_fn`, `AsyncQueue.reset`, `AsyncQueue._enqueue`, and the sync queue's `reset`).
 
 ## [1.0.0] — 2026-07-11
 

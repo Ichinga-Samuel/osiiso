@@ -36,6 +36,12 @@ def run[T](coro: Coroutine[Any, Any, T], *, use_uvloop: bool | None = None, debu
             ``False`` — force the stdlib loop.
         debug: Enable asyncio debug mode.
 
+    Returns:
+        Whatever *coro* returns.
+
+    Raises:
+        ImportError: If ``use_uvloop=True`` but uvloop is not installed.
+
     Example::
 
         summary = osiiso.run(main())

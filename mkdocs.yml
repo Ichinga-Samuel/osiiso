@@ -56,6 +56,7 @@ nav:
       - Results & Summaries: guides/results-and-summaries.md
       - Lifecycle & Policies: guides/lifecycle-and-policies.md
       - Bound Tasks: guides/bound-tasks.md
+      - Resumable Runs: guides/resumable-runs.md
   - Examples:
       - Feature Gallery: examples/feature-gallery.md
       - Hacker News Pipeline: examples/hacker-news-pipeline.md
@@ -70,6 +71,7 @@ nav:
       - Groups: reference/groups.md
       - TaskResult: reference/taskresult.md
       - RunSummary: reference/runsummary.md
+      - Checkpoint: reference/checkpoint.md
       - Exceptions: reference/exceptions.md
       - Runner: reference/runner.md
       - Shortcuts: reference/shortcuts.md

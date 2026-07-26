@@ -55,11 +55,12 @@ but its outcome is discarded.
 
 Submit a single sync task. Returns a [`SyncTaskHandle`](handles.md#synctaskhandle).
 
-### `map(fn, iterable, *, opts=None, **overrides) -> list[SyncTaskHandle]`
+### `map(fn, iterable, *, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> list[SyncTaskHandle]`
 
-Submit `fn` once per element. Same input interpretation as `AsyncQueue.map()`.
+Submit `fn` once per element. Same input interpretation as `AsyncQueue.map()`,
+and the same [`Checkpoint`](checkpoint.md) support via `checkpoint=`.
 
-### `group(tasks, iterable=None, *, group_id=None, opts=None, **overrides) -> SyncTaskGroup`
+### `group(tasks, iterable=None, *, group_id=None, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> SyncTaskGroup`
 
 Submit a batch and return a [`SyncTaskGroup`](groups.md#synctaskgroup).
 

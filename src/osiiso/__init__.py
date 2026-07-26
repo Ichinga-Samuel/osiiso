@@ -17,6 +17,7 @@ Quick start::
 """
 
 from .asyncqueue import AsyncQueue
+from .checkpoint import Checkpoint
 from .exceptions import ClosedError, ExecutionError, OsiisoError, QueueFullError
 from .group import SyncTaskGroup, TaskGroup, as_completed, iter_completed
 from .handle import SyncTaskHandle, TaskHandle
@@ -46,6 +47,8 @@ __all__ = [
     "TaskOptions",
     "TaskResult",
     "RunSummary",
+    # Resumable fan-out
+    "Checkpoint",
     # Exceptions
     "OsiisoError",
     "ClosedError",

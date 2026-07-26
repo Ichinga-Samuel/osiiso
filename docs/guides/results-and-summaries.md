@@ -55,6 +55,13 @@ summary.duration         # Wall-clock seconds for the entire run
 summary.ok  # True if no failures, cancellations, or timeouts
 ```
 
+!!! warning "With a checkpoint, the summary covers only what ran"
+    Tasks restored from a [`Checkpoint`](../reference/checkpoint.md) are never
+    submitted, so they are absent from the `RunSummary` — `total_submitted`
+    tells you how much still needed doing. Take values from `group.values()` or
+    the handles in that case; `summary.values` would drop everything restored.
+    A restored `TaskResult` is identifiable by `attempts == 0`.
+
 ### Extracting Values
 
 ```python

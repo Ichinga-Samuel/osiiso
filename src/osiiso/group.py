@@ -13,7 +13,14 @@ from .result import RunSummary, TaskResult
 
 
 async def as_completed(handles: Iterable[TaskHandle]) -> AsyncIterator[TaskHandle]:
-    """Yield async handles in completion order, fastest first."""
+    """Yield async handles in completion order, fastest first.
+
+    Args:
+        handles: The handles to await.
+
+    Yields:
+        Each :class:`~osiiso.TaskHandle` as it finishes.
+    """
     pending = {asyncio.ensure_future(h.wait()): h for h in handles}
     try:
         while pending:
@@ -29,7 +36,11 @@ def iter_completed(handles: Iterable[SyncTaskHandle], timeout: float | None = No
     """Yield sync handles in completion order, blocking the calling thread.
 
     Args:
+        handles: The handles to wait on.
         timeout: Overall budget in seconds for the whole iteration.
+
+    Yields:
+        Each :class:`~osiiso.SyncTaskHandle` as it finishes.
 
     Raises:
         TimeoutError: If *timeout* elapses before every handle finishes.
@@ -58,16 +69,20 @@ class _GroupBase:
     __slots__ = ("group_id", "handles")
 
     def __init__(self, group_id: str, handles: Iterable[Any]) -> None:
+        """Store *group_id* and freeze *handles* into a tuple."""
         self.group_id = group_id
         self.handles = tuple(handles)
 
     def __iter__(self):
+        """Iterate over the group's handles in submission order."""
         return iter(self.handles)
 
     def __len__(self) -> int:
+        """Number of handles in the group."""
         return len(self.handles)
 
     def __repr__(self) -> str:
+        """Return ``Group('group_id', tasks=N)``."""
         return f"{type(self).__name__}({self.group_id!r}, tasks={len(self)})"
 
     def cancel(self) -> int:
@@ -105,6 +120,12 @@ class SyncTaskGroup(_GroupBase):
     def wait(self, timeout: float | None = None) -> RunSummary:
         """Block until all handles finish; *timeout* is a shared budget for the whole group.
 
+        Args:
+            timeout: Seconds allowed for the whole group, or ``None`` for no limit.
+
+        Returns:
+            A :class:`~osiiso.RunSummary` in submission order.
+
         Raises:
             TimeoutError: If the budget is exhausted first.
         """
@@ -119,6 +140,9 @@ class SyncTaskGroup(_GroupBase):
     def values(self, timeout: float | None = None) -> tuple[Any, ...]:
         """Block until done and return values in submission order.
 
+        Args:
+            timeout: Seconds allowed for the whole group, or ``None`` for no limit.
+
         Raises:
             ~osiiso.ExecutionError: If any task failed or was cancelled.
             TimeoutError: If *timeout* elapses first.
@@ -128,5 +152,9 @@ class SyncTaskGroup(_GroupBase):
         return summary.values
 
     def as_completed(self, timeout: float | None = None) -> Iterator[SyncTaskHandle]:
-        """Yield this group's handles in completion order."""
+        """Yield this group's handles in completion order, blocking the calling thread.
+
+        Args:
+            timeout: Overall budget in seconds; :class:`TimeoutError` if it elapses.
+        """
         return iter_completed(self.handles, timeout=timeout)

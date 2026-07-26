@@ -32,6 +32,11 @@ from .sync import _Cancelled, _Ctl, _SyncQueue
 
 
 def _run_callable(fn: Any, args: tuple[Any, ...]) -> Any:
+    """Call *fn* inside the subprocess, driving coroutines with :func:`asyncio.run`.
+
+    Returns:
+        The task's return value, resolved if it was awaitable.
+    """
     if iscoroutinefunction(fn):
         return asyncio.run(fn(*args))
     result = fn(*args)
@@ -41,10 +46,12 @@ def _run_callable(fn: Any, args: tuple[Any, ...]) -> Any:
 
 
 async def _await(awaitable: Any) -> Any:
+    """Await *awaitable* so it can be driven by :func:`asyncio.run`."""
     return await awaitable
 
 
 def _send_safe(conn: Any, payload: tuple[str, Any]) -> None:
+    """Send *payload* over *conn*, degrading to an error frame when it will not pickle."""
     try:
         conn.send(payload)
     except Exception as exc:
@@ -55,7 +62,16 @@ def _send_safe(conn: Any, payload: tuple[str, Any]) -> None:
 
 
 def _pool_main(conn: Any, initializer: Any, initargs: tuple[Any, ...]) -> None:
-    """Entry point of a pool subprocess: run tasks from the pipe until told to stop."""
+    """Entry point of a pool subprocess: run tasks from the pipe until told to stop.
+
+    Replies with ``("v", value)`` or ``("e", exception)`` per task, and exits on
+    a ``None`` message or a closed pipe.
+
+    Args:
+        conn: The child end of the pipe to the coordinating worker thread.
+        initializer: Callable run once before serving tasks; a failure is reported and ends the process.
+        initargs: Positional arguments for *initializer*.
+    """
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     except (ValueError, OSError):
@@ -95,6 +111,13 @@ class _Slot:
     __slots__ = ("_ctx", "_init", "_initargs", "proc", "conn", "lock")
 
     def __init__(self, ctx: BaseContext, initializer: Any, initargs: tuple[Any, ...]) -> None:
+        """Record how to spawn the subprocess; nothing starts until :meth:`ensure`.
+
+        Args:
+            ctx: Multiprocessing context supplying the start method.
+            initializer: Callable run once inside the subprocess.
+            initargs: Positional arguments for *initializer*.
+        """
         self._ctx = ctx
         self._init = initializer
         self._initargs = initargs
@@ -127,7 +150,11 @@ class _Slot:
                     pass
 
     def reap(self) -> int | None:
-        """Collect a dead or killed subprocess; returns its exit code."""
+        """Collect a dead or killed subprocess, escalating to ``kill`` if it lingers.
+
+        Returns:
+            Its exit code, or ``None`` if the slot had no process.
+        """
         with self.lock:
             p = self.proc
             if p is None:
@@ -146,6 +173,11 @@ class _Slot:
             self._close_locked(graceful=True)
 
     def _close_locked(self, *, graceful: bool) -> None:
+        """Drop the pipe and stop the process, escalating join → terminate → kill (lock held).
+
+        Args:
+            graceful: Ask the subprocess to exit first and allow it longer to do so.
+        """
         p, c = self.proc, self.conn
         self.proc = self.conn = None
         if c is not None:
@@ -230,6 +262,7 @@ class ProcessQueue(_SyncQueue):
         on_complete: Callable[[TaskResult], Any] | None = None,
         on_retry: Callable[[SyncTaskHandle, BaseException], Any] | None = None,
     ) -> None:
+        """Configure the queue; see the class docstring for what each argument means."""
         super().__init__(
             workers=workers,
             size=size,
@@ -249,18 +282,39 @@ class ProcessQueue(_SyncQueue):
         self._ctx = context or multiprocessing.get_context()
 
     def _validate_fn(self, fn: Any) -> None:
+        """Reject bare awaitables — process tasks must be picklable callables.
+
+        Raises:
+            TypeError: If *fn* is an awaitable.
+        """
         if isawaitable(fn):
             raise TypeError("process tasks must be callable, not awaitable")
 
     def _worker_ctx(self) -> _Slot:
+        """Give the worker its own subprocess slot (spawned lazily on first use)."""
         # The initializer runs inside the subprocess, not the coordinator thread.
         return _Slot(self._ctx, self._initializer, self._initargs)
 
     def _close_worker_ctx(self, wctx: Any) -> None:
+        """Shut down the worker's subprocess when the worker exits."""
         if wctx is not None:
             wctx.close()
 
     def _execute(self, t: _Task, ctl: _Ctl, wctx: Any) -> Any:
+        """Ship one attempt to the worker's subprocess and wait for its reply.
+
+        Cancellation and timeout both terminate the subprocess, which is
+        respawned for the next task.
+
+        Returns:
+            The task's return value.
+
+        Raises:
+            _Cancelled: If cancellation was requested.
+            TimeoutError: If ``opts.timeout`` elapsed.
+            RuntimeError: If the subprocess died or its reply could not be read.
+            Exception: Whatever the task itself raised.
+        """
         slot: _Slot = wctx
         if ctl.cancel_ev.is_set():
             raise _Cancelled

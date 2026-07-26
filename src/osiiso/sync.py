@@ -34,11 +34,16 @@ class _Ctl:
     __slots__ = ("cancel_ev", "wake", "slot")
 
     def __init__(self) -> None:
+        """Create an unset control block; *wake* and *slot* are filled in by the executor."""
         self.cancel_ev = threading.Event()
         self.wake: threading.Event | None = None
         self.slot: Any = None
 
     def interrupt(self) -> None:
+        """Flag cancellation and break the attempt out of whatever it is blocked on.
+
+        Wakes a waiting thread executor and terminates a busy pool subprocess.
+        """
         self.cancel_ev.set()
         wake = self.wake
         if wake is not None:
@@ -72,6 +77,11 @@ class _SyncQueue(_SubmitPlane):
         on_complete: Callable[[TaskResult], Any] | None,
         on_retry: Callable[[SyncTaskHandle, BaseException], Any] | None,
     ) -> None:
+        """Store the shared configuration; see :class:`ThreadQueue` / :class:`ProcessQueue` for the argument meanings.
+
+        Args:
+            auto_limit: Upper bound on auto-scaled workers, chosen by the subclass.
+        """
         _check_queue_args(workers, size, timeout, rate, burst)
         self._ready: queue_mod.PriorityQueue[_Task] = queue_mod.PriorityQueue()
         self._workers = workers
@@ -87,7 +97,6 @@ class _SyncQueue(_SubmitPlane):
         self._on_start = on_start
         self._on_complete = on_complete
         self._on_retry = on_retry
-
         self._counter = itertools.count()
         self._wids = itertools.count(1)
         self._lock = threading.RLock()
@@ -106,8 +115,6 @@ class _SyncQueue(_SubmitPlane):
         self._started = False
         self._running = False
         self._timed_out = False
-
-    # -- introspection ------------------------------------------------------
 
     @property
     def active_count(self) -> int:
@@ -146,12 +153,13 @@ class _SyncQueue(_SubmitPlane):
                 "closed": self._closed,
             }
 
-    # -- lifecycle ----------------------------------------------------------
-
     def start(self):
         """Spawn workers and accept a new run.
 
         Called automatically by :meth:`run` and ``__enter__``.
+
+        Returns:
+            The queue itself, so ``q = ThreadQueue().start()`` reads naturally.
 
         Raises:
             ~osiiso.ClosedError: If the queue has been shut down.
@@ -179,8 +187,12 @@ class _SyncQueue(_SubmitPlane):
             strict: Raise :class:`~osiiso.ExecutionError` if any task failed.
             fail_policy: Override the queue fail policy for this run only.
 
+        Returns:
+            A summary of the tasks completed during this run (detached tasks excluded).
+
         Raises:
             RuntimeError: If ``run()`` is already in progress.
+            ~osiiso.ExecutionError: If *strict* and any task failed.
         """
         with self._lock:
             if self._running:
@@ -192,7 +204,6 @@ class _SyncQueue(_SubmitPlane):
         if fail_policy is not None:
             self._fail_policy = fail_policy
         effective = timeout if timeout is not None else self._timeout
-
         try:
             self.start()
             if self._mode == "finite":
@@ -256,10 +267,12 @@ class _SyncQueue(_SubmitPlane):
         self._shutdown_ev.set()
 
     def __enter__(self):
+        """Start the queue and return it."""
         self.start()
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Drain outstanding work on a clean exit, or force-cancel it if the block raised."""
         self.shutdown(force=exc_type is not None)
 
     def cancel(self) -> threading.Thread | None:
@@ -312,13 +325,19 @@ class _SyncQueue(_SubmitPlane):
         with self._lock:
             self._results.clear()
 
-    # -- subclass hooks -------------------------------------------------------
-
     def _validate_fn(self, fn: Any) -> None:
-        """Reject unsupported callables at submission time."""
+        """Reject unsupported callables at submission time (subclass hook).
+
+        Raises:
+            TypeError: If the subclass cannot run *fn*.
+        """
 
     def _worker_ctx(self) -> Any:
-        """Create per-worker state (e.g. a pooled process slot); may raise."""
+        """Create per-worker state (e.g. a pooled process slot); a failure aborts the queue.
+
+        Returns:
+            The context object handed to every :meth:`_execute` call on this worker.
+        """
         if self._initializer is not None:
             self._initializer(*self._initargs)
         return None
@@ -327,12 +346,35 @@ class _SyncQueue(_SubmitPlane):
         """Release per-worker state when the worker exits."""
 
     def _execute(self, t: _Task, ctl: _Ctl, wctx: Any) -> Any:
-        """Run one attempt; raise :class:`_Cancelled`, :class:`TimeoutError`, or the task error."""
+        """Run one attempt of one task (subclass hook).
+
+        Args:
+            t: The task to execute.
+            ctl: Control block to watch for cancellation and register interrupt targets on.
+            wctx: This worker's context from :meth:`_worker_ctx`.
+
+        Returns:
+            The task's return value.
+
+        Raises:
+            _Cancelled: If cancellation was requested.
+            TimeoutError: If ``opts.timeout`` elapsed.
+            Exception: Whatever the task itself raised.
+        """
         raise NotImplementedError
 
-    # -- internals ----------------------------------------------------------
-
     def _enqueue(self, fn: Any, args: tuple[Any, ...], opts: TaskOptions) -> SyncTaskHandle:
+        """Admit one task, then either schedule it for later or make it ready to run.
+
+        On a bounded queue this blocks until the backlog drops below ``size``.
+
+        Returns:
+            The handle for the new task.
+
+        Raises:
+            ~osiiso.ClosedError: If the queue is not accepting tasks.
+            TypeError: If the subclass cannot run *fn*.
+        """
         self._validate_fn(fn)
         with self._lock:
             self._check_accepting()
@@ -355,16 +397,23 @@ class _SyncQueue(_SubmitPlane):
         return t.handle
 
     def _check_accepting(self) -> None:
+        """Guard submission (lock held).
+
+        Raises:
+            ~osiiso.ClosedError: If the queue is closed, draining, or halted.
+        """
         if self._closed or not self._accepting or self._halt:
             raise ClosedError("queue is not accepting tasks")
 
     def _ensure_timer(self) -> None:
+        """Start the scheduling thread if it is not already alive (lock held)."""
         th = self._timer_thread
         if th is None or not th.is_alive():
             self._timer_thread = threading.Thread(target=self._timer_loop, name="osiiso-timer", daemon=True)
             self._timer_thread.start()
 
     def _timer_loop(self) -> None:
+        """Scheduling thread: move delayed tasks onto the ready queue as they come due."""
         with self._timer_cond:
             while not self._closed:
                 if not self._later:
@@ -382,6 +431,7 @@ class _SyncQueue(_SubmitPlane):
                         self._spawn_workers()
 
     def _target_workers(self) -> int:
+        """How many workers should exist right now: the fixed count, or one per backlogged task."""
         if self._workers is not None:
             return self._workers
         backlog = self._ready.qsize() + len(self._active)
@@ -389,6 +439,7 @@ class _SyncQueue(_SubmitPlane):
         return max(floor, min(self._auto_limit, backlog))
 
     def _spawn_workers(self) -> None:
+        """Create worker threads until the target count is reached (no-op once halted)."""
         to_start: list[threading.Thread] = []
         with self._lock:
             if self._closed or self._halt or not self._started:
@@ -403,6 +454,13 @@ class _SyncQueue(_SubmitPlane):
             th.start()
 
     def _worker(self, wid: int) -> None:
+        """Pull ready tasks and run them until a stop sentinel arrives.
+
+        A failing :meth:`_worker_ctx` aborts the whole queue.
+
+        Args:
+            wid: Worker id used for the thread name and the worker registry.
+        """
         try:
             wctx = self._worker_ctx()
         except BaseException:
@@ -429,6 +487,15 @@ class _SyncQueue(_SubmitPlane):
                 self._threads.pop(wid, None)
 
     def _attempts(self, t: _Task, wctx: Any) -> None:
+        """Run one task to a final result, applying rate limiting, timeout, and retries.
+
+        Registers the task as active for the duration so it can be interrupted,
+        and always records a result: succeeded, failed, or cancelled.
+
+        Args:
+            t: The task to run.
+            wctx: This worker's context from :meth:`_worker_ctx`.
+        """
         h, o = t.handle, t.opts
         ctl = _Ctl()
         with self._lock:
@@ -469,6 +536,10 @@ class _SyncQueue(_SubmitPlane):
                 self._active.pop(h.task_id, None)
 
     def _record(self, h: SyncTaskHandle, result: TaskResult) -> None:
+        """Publish a task's final result: store it, wake waiters, apply ``fail_first``, fire ``on_complete``.
+
+        Ignores repeat calls for a task that already finished.
+        """
         if not h._mark_finished(result):
             return
         fail_abort = False
@@ -484,10 +555,23 @@ class _SyncQueue(_SubmitPlane):
         _emit(self._on_complete, result)
 
     def _await_idle(self, timeout: float | None) -> bool:
+        """Block until nothing is outstanding.
+
+        Args:
+            timeout: Seconds to wait, or ``None`` for no limit.
+
+        Returns:
+            ``True`` if the queue went idle, ``False`` if *timeout* elapsed first.
+        """
         with self._done_cond:
             return self._done_cond.wait_for(lambda: self._outstanding == 0, timeout=timeout)
 
     def _cancel_task(self, task_id: str) -> bool:
+        """Cancel one task wherever it currently sits: active, scheduled, or queued.
+
+        Returns:
+            ``True`` if the task was found and cancelled.
+        """
         found: _Task | None = None
         with self._lock:
             entry = self._active.get(task_id)
@@ -506,6 +590,15 @@ class _SyncQueue(_SubmitPlane):
         return self._drain_ready(kill=True, only={task_id}) > 0
 
     def _drain_ready(self, *, kill: bool, only: set[str] | None = None) -> int:
+        """Cancel queued tasks and put the spared ones back.
+
+        Args:
+            kill: Also cancel ``must_complete`` tasks.
+            only: Restrict cancellation to these task ids (``None`` = every queued task).
+
+        Returns:
+            How many tasks were cancelled.
+        """
         kept: list[_Task] = []
         dropped: list[_Task] = []
         while True:
@@ -530,11 +623,21 @@ class _SyncQueue(_SubmitPlane):
         return len(dropped)
 
     def _abort(self, *, kill: bool) -> None:
+        """Halt the queue and cancel its tasks.
+
+        Args:
+            kill: Also cancel ``must_complete`` tasks, which are otherwise spared.
+        """
         with self._lock:
             self._halt = True
         self._abort_tasks(kill=kill)
 
     def _abort_tasks(self, *, kill: bool) -> None:
+        """Cancel scheduled, queued, and active tasks without touching the halt flag.
+
+        Args:
+            kill: Also cancel ``must_complete`` tasks, which are otherwise spared.
+        """
         dropped: list[_Task] = []
         with self._lock:
             keep: list[tuple[float, int, _Task]] = []
@@ -557,6 +660,7 @@ class _SyncQueue(_SubmitPlane):
                 ctl.interrupt()
 
     def _stop_workers(self) -> None:
+        """Send one stop sentinel per worker and join them all (never joining the calling thread)."""
         with self._lock:
             workers = list(self._threads.values())
         if workers:
@@ -572,6 +676,7 @@ class _SyncQueue(_SubmitPlane):
             self._started = False
 
     def _drain_sentinels(self) -> None:
+        """Discard unconsumed stop sentinels so a restarted worker does not exit at once."""
         kept: list[_Task] = []
         while True:
             try:

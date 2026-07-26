@@ -32,6 +32,11 @@ class ExecutionError(OsiisoError):
     """
 
     def __init__(self, results: list[TaskResult] | tuple[TaskResult, ...]):
+        """Store the offending results and summarise their counts in the message.
+
+        Args:
+            results: The failed and/or cancelled results to report.
+        """
         self.results = tuple(results)
         failed = sum(1 for r in self.results if r.status == "failed")
         cancelled = len(self.results) - failed

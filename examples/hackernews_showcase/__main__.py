@@ -2,6 +2,13 @@
 
 Usage:
     python -m examples.hackernews_showcase --limit 6
+
+Item and user fetches are checkpointed, so running it twice fetches nothing
+the second time:
+
+    python -m examples.hackernews_showcase --limit 6      # fetches everything
+    python -m examples.hackernews_showcase --limit 6      # restores everything
+    python -m examples.hackernews_showcase --reset-checkpoint
 """
 
 from __future__ import annotations
@@ -12,6 +19,7 @@ import tempfile
 from pathlib import Path
 
 import osiiso
+from osiiso import Checkpoint
 
 from .workflows import print_report, run_pipeline
 
@@ -20,6 +28,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the osiiso Hacker News showcase.")
     parser.add_argument("--limit", type=int, default=6, help="Number of story/job/poll items to fetch.")
     parser.add_argument("--database", type=Path, default=Path(tempfile.gettempdir()) / "osiiso_hn_showcase.sqlite3")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path(tempfile.gettempdir()) / "osiiso_hn_checkpoint.sqlite3",
+        help="Where to record which items/users have been fetched.",
+    )
+    parser.add_argument("--no-checkpoint", action="store_true", help="Fetch everything every run.")
+    parser.add_argument("--reset-checkpoint", action="store_true", help="Forget past fetches, then run.")
     parser.add_argument("--online", action="store_true", help="Use the live Hacker News API instead of fixtures.")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
     return parser.parse_args()
@@ -28,8 +44,18 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    result = osiiso.run(run_pipeline(args.limit, database=args.database, offline=not args.online))
-    print_report(result)
+
+    if args.no_checkpoint:
+        result = osiiso.run(run_pipeline(args.limit, database=args.database, offline=not args.online))
+        print_report(result)
+        return
+
+    # Opened around the pipeline so every completion callback has fired before it closes.
+    with Checkpoint(args.checkpoint) as cp:
+        if args.reset_checkpoint:
+            print(f"Cleared {cp.clear()} checkpoint record(s).")
+        result = osiiso.run(run_pipeline(args.limit, database=args.database, offline=not args.online, checkpoint=cp))
+        print_report(result)
 
 
 if __name__ == "__main__":

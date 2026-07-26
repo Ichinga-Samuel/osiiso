@@ -180,7 +180,26 @@ graph TD
 
 ---
 
+## Resuming a Fan-Out
+
+`map()` and `group()` both accept a [`Checkpoint`](../reference/checkpoint.md),
+which records which *inputs* have completed so a killed run does not redo them:
+
+```python
+with Checkpoint("run.sqlite") as cp, ThreadQueue(workers=8) as q:
+    grp = q.group(fetch, urls, checkpoint=cp, retries=3)
+    q.run()
+
+pages = grp.values()   # restored and freshly-fetched values, still 1:1 with urls
+```
+
+See [Resumable Runs](resumable-runs.md) for keys, namespaces, and what is
+actually stored.
+
+---
+
 ## Next Steps
 
 - [Task Options](task-options.md) — Retries, timeouts, priorities, scheduling
 - [Handles & Groups](handles-and-groups.md) — Awaiting, inspecting, and cancelling tasks
+- [Resumable Runs](resumable-runs.md) — Skipping inputs an earlier run finished

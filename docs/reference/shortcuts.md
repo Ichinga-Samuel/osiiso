@@ -17,10 +17,13 @@ with the input iterable.
 ## Signatures
 
 ```python
-await amap(fn, iterable, *, workers=None, rate=None, timeout=None, **options) -> tuple
-tmap(fn, iterable, *, workers=None, rate=None, timeout=None, **options) -> tuple
+await amap(fn, iterable, *, workers=None, rate=None, timeout=None,
+           checkpoint=None, key=None, namespace=None, **options) -> tuple
+tmap(fn, iterable, *, workers=None, rate=None, timeout=None,
+     checkpoint=None, key=None, namespace=None, **options) -> tuple
 pmap(fn, iterable, *, workers=None, rate=None, timeout=None,
-     context=None, initializer=None, initargs=(), **options) -> tuple
+     context=None, initializer=None, initargs=(),
+     checkpoint=None, key=None, namespace=None, **options) -> tuple
 ```
 
 | Helper | Queue | Notes |
@@ -37,6 +40,9 @@ pmap(fn, iterable, *, workers=None, rate=None, timeout=None,
 | `rate` | Max task attempts per second (`None` = unlimited) |
 | `timeout` | Overall run limit in seconds |
 | `context` / `initializer` / `initargs` | `pmap` only — forwarded to `ProcessQueue` |
+| `checkpoint` | A [`Checkpoint`](checkpoint.md) to resume against — recorded elements are not re-run, and their stored values are returned in place |
+| `key` | Derives the checkpoint key from an element (default: canonical JSON) |
+| `namespace` | Isolates this fan-out inside the checkpoint (default: the name of `fn`) |
 | `**options` | Any [`TaskOptions`](taskoptions.md) fields (`retries=3`, `priority=0`, ...) |
 
 **Raises:** [`ExecutionError`](exceptions.md#executionerror) if any task failed or was cancelled.

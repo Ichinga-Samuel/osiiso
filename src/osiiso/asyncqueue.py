@@ -84,6 +84,7 @@ class AsyncQueue(_SubmitPlane):
         on_complete: Callable[[TaskResult], Any] | None = None,
         on_retry: Callable[[TaskHandle, BaseException], Any] | None = None,
     ) -> None:
+        """Configure the queue; see the class docstring for what each argument means."""
         _check_queue_args(workers, size, timeout, rate, burst)
         self._ready: asyncio.PriorityQueue[_Task] = asyncio.PriorityQueue()
         self._workers = workers
@@ -119,8 +120,6 @@ class AsyncQueue(_SubmitPlane):
         self._loop_tid: int | None = None
         self._bind_lock = threading.Lock()
 
-    # -- introspection ------------------------------------------------------
-
     @property
     def active_count(self) -> int:
         """Tasks currently executing."""
@@ -153,12 +152,13 @@ class AsyncQueue(_SubmitPlane):
             "closed": self._closed,
         }
 
-    # -- lifecycle ----------------------------------------------------------
-
     async def start(self) -> AsyncQueue:
         """Bind the running loop, arm pending timers, and spawn workers.
 
         Called automatically by :meth:`run` and ``__aenter__``.
+
+        Returns:
+            The queue itself, so ``q = await AsyncQueue().start()`` reads naturally.
 
         Raises:
             ~osiiso.ClosedError: If the queue has been shut down.
@@ -190,8 +190,12 @@ class AsyncQueue(_SubmitPlane):
             strict: Raise :class:`~osiiso.ExecutionError` if any task failed.
             fail_policy: Override the queue fail policy for this run only.
 
+        Returns:
+            A summary of the tasks completed during this run (detached tasks excluded).
+
         Raises:
             RuntimeError: If ``run()`` is already in progress.
+            ~osiiso.ExecutionError: If *strict* and any task failed.
         """
         if self._running:
             raise RuntimeError("run() is already in progress")
@@ -251,10 +255,12 @@ class AsyncQueue(_SubmitPlane):
         self._wake.set()
 
     async def __aenter__(self) -> AsyncQueue:
+        """Start the queue and return it."""
         await self.start()
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Drain outstanding work on a clean exit, or force-cancel it if the block raised."""
         await self.shutdown(force=exc_type is not None)
 
     def cancel(self) -> Any:
@@ -305,9 +311,12 @@ class AsyncQueue(_SubmitPlane):
         """Discard accumulated results to free memory."""
         self._results.clear()
 
-    # -- internals ----------------------------------------------------------
-
     def _bind_loop(self) -> None:
+        """Bind the queue to the running loop and remember its thread.
+
+        Raises:
+            RuntimeError: If another loop is already driving live workers or tasks.
+        """
         loop = asyncio.get_running_loop()
         with self._bind_lock:
             if self._loop is not None and self._loop is not loop and (self._worker_tasks or self._runners):
@@ -316,6 +325,16 @@ class AsyncQueue(_SubmitPlane):
             self._loop_tid = threading.get_ident()
 
     def _enqueue(self, fn: Any, args: tuple[Any, ...], opts: TaskOptions) -> TaskHandle:
+        """Admit one task, then either arm its timer or make it ready to run.
+
+        Returns:
+            The handle for the new task.
+
+        Raises:
+            ~osiiso.ClosedError: If the queue is not accepting tasks.
+            ~osiiso.QueueFullError: If a bounded queue is already full.
+            ValueError: If a bare awaitable is submitted with retries (it can only be awaited once).
+        """
         if self._closed or not self._accepting or self._halt:
             raise ClosedError("queue is not accepting tasks")
         if self._size and self._outstanding >= self._size:
@@ -334,6 +353,7 @@ class AsyncQueue(_SubmitPlane):
         return t.handle
 
     def _arm(self, t: _Task) -> None:
+        """Put a delayed task on a loop timer, parking it as dormant until the queue starts."""
         if not self._started or self._loop is None:
             self._dormant.append(t)
             return
@@ -342,6 +362,7 @@ class AsyncQueue(_SubmitPlane):
         self._timers[t.handle.task_id] = (timer, t)
 
     def _release(self, t: _Task) -> None:
+        """Timer callback: move a now-due task onto the ready queue."""
         self._timers.pop(t.handle.task_id, None)
         if t.handle.done():
             return
@@ -349,6 +370,7 @@ class AsyncQueue(_SubmitPlane):
         self._spawn_workers()
 
     def _target_workers(self) -> int:
+        """How many workers should exist right now: the fixed count, or one per backlogged task."""
         if self._workers is not None:
             return self._workers
         backlog = self._ready.qsize() + len(self._runners)
@@ -356,6 +378,7 @@ class AsyncQueue(_SubmitPlane):
         return max(floor, min(self._auto_limit, backlog))
 
     def _spawn_workers(self) -> None:
+        """Create worker coroutines until the target count is reached (no-op once halted)."""
         if self._closed or self._halt or not self._started or self._loop is None:
             return
         target = self._target_workers()
@@ -364,6 +387,11 @@ class AsyncQueue(_SubmitPlane):
             self._worker_tasks[wid] = self._loop.create_task(self._worker(wid), name=f"osiiso-worker-{wid}")
 
     async def _worker(self, wid: int) -> None:
+        """Pull ready tasks and run them until a stop sentinel arrives.
+
+        Args:
+            wid: Worker id used for the asyncio task name and the worker registry.
+        """
         try:
             while True:
                 t = await self._ready.get()
@@ -390,6 +418,11 @@ class AsyncQueue(_SubmitPlane):
             self._worker_tasks.pop(wid, None)
 
     async def _attempts(self, t: _Task) -> None:
+        """Run one task to a final result, applying rate limiting, timeout, and retries.
+
+        Always records a result: succeeded, failed after the last attempt, or
+        cancelled (in which case :class:`asyncio.CancelledError` is re-raised).
+        """
         h, o = t.handle, t.opts
         delay = o.retry_delay
         try:
@@ -420,6 +453,11 @@ class AsyncQueue(_SubmitPlane):
 
     @staticmethod
     async def _call(t: _Task) -> Any:
+        """Perform one attempt: await an awaitable, await a coroutine function, or off-load a sync call to a thread.
+
+        Returns:
+            The task's return value, awaited if the sync call returned an awaitable.
+        """
         fn = t.fn
         if isawaitable(fn):
             return await fn
@@ -431,6 +469,10 @@ class AsyncQueue(_SubmitPlane):
         return result
 
     def _record(self, h: TaskHandle, result: TaskResult) -> None:
+        """Publish a task's final result: store it, update counters, apply ``fail_first``, fire ``on_complete``.
+
+        Ignores repeat calls for a task that already finished.
+        """
         if not h._mark_finished(result):
             return
         self._results.append(result)
@@ -442,6 +484,11 @@ class AsyncQueue(_SubmitPlane):
         _emit(self._on_complete, result)
 
     def _cancel_task(self, task_id: str) -> bool:
+        """Cancel one task from any thread, hopping onto the loop thread when needed.
+
+        Returns:
+            ``True`` if the cancellation was accepted (or handed off to the loop).
+        """
         loop = self._loop
         if loop is not None and loop.is_running() and threading.get_ident() != self._loop_tid:
             loop.call_soon_threadsafe(self._cancel_local, task_id)
@@ -449,6 +496,13 @@ class AsyncQueue(_SubmitPlane):
         return self._cancel_local(task_id)
 
     def _cancel_local(self, task_id: str) -> bool:
+        """Cancel a task on the loop thread, wherever it currently sits.
+
+        Checks the running, timed, dormant, and ready sets in turn.
+
+        Returns:
+            ``True`` if the task was found and cancelled.
+        """
         entry = self._runners.get(task_id)
         if entry is not None:
             entry[0].cancel()
@@ -467,6 +521,15 @@ class AsyncQueue(_SubmitPlane):
         return self._drain_ready(kill=True, only={task_id}) > 0
 
     def _drain_ready(self, *, kill: bool, only: set[str] | None = None) -> int:
+        """Cancel queued tasks and put the spared ones back.
+
+        Args:
+            kill: Also cancel ``must_complete`` tasks.
+            only: Restrict cancellation to these task ids (``None`` = every queued task).
+
+        Returns:
+            How many tasks were cancelled.
+        """
         kept: list[_Task] = []
         cancelled = 0
         while True:
@@ -490,7 +553,11 @@ class AsyncQueue(_SubmitPlane):
         return cancelled
 
     def _abort(self, *, kill: bool) -> None:
-        """Cancel scheduled, queued, and running tasks (sparing ``must_complete`` unless *kill*)."""
+        """Halt the queue and cancel scheduled, queued, and running tasks.
+
+        Args:
+            kill: Also cancel ``must_complete`` tasks, which are otherwise spared.
+        """
         self._halt = True
         for task_id, (timer, t) in list(self._timers.items()):
             if kill or not t.opts.must_complete:
@@ -507,6 +574,7 @@ class AsyncQueue(_SubmitPlane):
                 runner.cancel()
 
     async def _stop_workers(self) -> None:
+        """Send one stop sentinel per worker, wait for them all to exit, and clear the queue of leftovers."""
         if self._worker_tasks:
             workers = list(self._worker_tasks.values())
             for _ in workers:
@@ -517,6 +585,7 @@ class AsyncQueue(_SubmitPlane):
         self._started = False
 
     def _drain_sentinels(self) -> None:
+        """Discard unconsumed stop sentinels so a restarted worker does not exit at once."""
         kept: list[_Task] = []
         while True:
             try:

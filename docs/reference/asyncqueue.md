@@ -61,7 +61,7 @@ accepting tasks; [`QueueFullError`](exceptions.md#queuefullerror) if a bounded
 queue (`size > 0`) is full; `ValueError` if a bare awaitable is submitted with
 `retries > 0` (a spent coroutine cannot be re-awaited).
 
-### `map(fn, iterable, *, opts=None, **overrides) -> list[TaskHandle]`
+### `map(fn, iterable, *, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> list[TaskHandle]`
 
 Submit `fn` once per element. Returns a list of [`TaskHandle`](handles.md#taskhandle) objects.
 
@@ -71,11 +71,15 @@ Element interpretation:
 - **dict** → passed as keyword args via `functools.partial`
 - **other** → single positional arg
 
-### `group(tasks, iterable=None, *, group_id=None, opts=None, **overrides) -> TaskGroup`
+Pass a [`Checkpoint`](checkpoint.md) as `checkpoint=` to skip elements that
+already completed in an earlier run; `key=` and `namespace=` control how those
+elements are identified.
+
+### `group(tasks, iterable=None, *, group_id=None, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> TaskGroup`
 
 Submit a batch and return a [`TaskGroup`](groups.md#taskgroup).
 
-- `group([(fn, *args), ...])` — heterogeneous tasks
+- `group([(fn, *args), ...])` — heterogeneous tasks (checkpointing this form requires `namespace=`)
 - `group(fn, iterable)` — homogeneous tasks (like `map()` with a group handle)
 
 ### `task(opts=None, **overrides) -> Callable`

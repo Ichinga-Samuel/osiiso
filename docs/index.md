@@ -62,6 +62,7 @@ print(osiiso.run(main()))
 - :material-clock-outline: **Scheduling** — `delay=` / `run_at=` tasks never occupy a worker while waiting
 - :material-shield-check: **Graceful shutdown** — `must_complete` tasks are protected during shutdown
 - :material-group: **Batch workflows** — `submit()`, `map()`, and `group()` for flexible task submission
+- :material-content-save-check: **Resumable runs** — `Checkpoint` skips inputs a killed run already finished
 - :material-flash: **One-shot helpers** — `amap()`, `tmap()`, and `pmap()` return ordered values in one call
 - :material-clipboard-check: **Structured results** — `RunSummary` and immutable `TaskResult` records
 - :material-hook: **Lifecycle hooks** — `on_start`, `on_complete`, and `on_retry` callbacks

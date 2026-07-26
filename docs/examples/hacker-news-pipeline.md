@@ -20,6 +20,17 @@ uv run python -m examples.hackernews_showcase --limit 6
 uv run python -m examples.hackernews_showcase --limit 20 --online
 ```
 
+### Resuming
+
+Item and user fetches are checkpointed, so a second run fetches nothing:
+
+```bash
+uv run python -m examples.hackernews_showcase --limit 6    # items restored: 0/6 (fetched 6)
+uv run python -m examples.hackernews_showcase --limit 6    # items restored: 6/6 (fetched 0)
+uv run python -m examples.hackernews_showcase --reset-checkpoint
+uv run python -m examples.hackernews_showcase --no-checkpoint
+```
+
 ---
 
 ## Pipeline Architecture
@@ -49,8 +60,27 @@ await q.run(strict=True)
 feed_values = await feed_group.values()
 ```
 
+Items and users are fetched through a [`Checkpoint`](../reference/checkpoint.md),
+so a re-run only requests what is missing:
+
+```python
+item_group = q.group(client.item, item_ids, opts=item_opts,
+                     checkpoint=checkpoint, namespace="hn-item")
+await q.run(strict=True)
+items = [dict(item) for item in await item_group.values()]
+```
+
+The feeds are deliberately **not** checkpointed — "top stories" changes by the
+minute, so restoring a stale index would defeat the point of re-running.
+
 **Features demonstrated:** priorities, retries, backoff, task timeouts, groups,
-maps, hooks, and queue reset.
+maps, hooks, queue reset, and resumable fetches.
+
+!!! warning "Read values off the group, not the summary"
+    Restored tasks never enter the queue, so they are absent from the
+    [`RunSummary`](../reference/runsummary.md) but present on their handles.
+    With a checkpoint in play, take values from `group.values()` — using
+    `summary.values` would silently drop everything that was restored.
 
 ### Stage 2: Thread Persistence
 
@@ -101,11 +131,37 @@ arguments, grouped summaries.
 | `store.py` | Thread-safe SQLite writer |
 | `analytics.py` | Process-safe CPU functions (top-level) |
 | `workflows.py` | Queue orchestration across all three stages |
-| `__main__.py` | CLI entry point with `--limit` and `--online` flags |
+| `__main__.py` | CLI entry point with `--limit`, `--online`, and checkpoint flags |
 
 ---
 
 ## Key Patterns
+
+### Resumable Fetches
+
+The checkpoint is opened around the whole pipeline, so it outlives every queue
+and closes only once all completion callbacks have fired:
+
+```python
+with Checkpoint(args.checkpoint) as cp:
+    result = osiiso.run(run_pipeline(args.limit, database=args.database, checkpoint=cp))
+```
+
+Counting restored records uses the `attempts == 0` marker — a result that never
+executed during this run:
+
+```python
+def _restored(group):
+    return sum(1 for h in group if h.done() and h.result().attempts == 0)
+```
+
+The heterogeneous user group carries a live callable in each entry, so it needs
+an explicit namespace and key:
+
+```python
+q.group([(client.user, user_id) for user_id in user_ids],
+        checkpoint=checkpoint, namespace="hn-user", key=lambda entry: entry[1])
+```
 
 ### Queue Reset Between Stages
 

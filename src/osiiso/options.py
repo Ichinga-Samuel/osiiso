@@ -53,6 +53,11 @@ class TaskOptions:
     metadata: Any = None
 
     def __post_init__(self) -> None:
+        """Validate the field ranges and the ``delay``/``run_at`` exclusivity.
+
+        Raises:
+            ValueError: If a field is out of range or both scheduling fields are set.
+        """
         if self.timeout is not None and self.timeout <= 0:
             raise ValueError("timeout must be > 0")
         if self.retries < 0:
@@ -67,7 +72,14 @@ class TaskOptions:
             raise ValueError("delay and run_at are mutually exclusive")
 
     def replace(self, **overrides: Any) -> TaskOptions:
-        """Return a copy with the given fields replaced."""
+        """Return a copy with the given fields replaced.
+
+        Args:
+            **overrides: Field values to change; everything else is copied as is.
+
+        Returns:
+            A new, validated :class:`TaskOptions`.
+        """
         return dataclasses.replace(self, **overrides)
 
 
@@ -78,6 +90,13 @@ _DEFAULT = TaskOptions()
 
 def resolve_opts(opts: TaskOptions | None, overrides: dict[str, Any]) -> TaskOptions:
     """Merge a base :class:`TaskOptions` with keyword overrides (overrides win).
+
+    Args:
+        opts: The base options, or ``None`` to start from the defaults.
+        overrides: Option field names mapped to their overriding values.
+
+    Returns:
+        The effective options for a submission.
 
     Raises:
         TypeError: If *overrides* contains a name that is not a TaskOptions field.

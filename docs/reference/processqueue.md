@@ -96,11 +96,13 @@ async def async_compute(data: list) -> dict:
 
 Submit a single task. Returns a [`SyncTaskHandle`](handles.md#synctaskhandle).
 
-### `map(fn, iterable, *, opts=None, **overrides) -> list[SyncTaskHandle]`
+### `map(fn, iterable, *, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> list[SyncTaskHandle]`
 
-Submit `fn` once per element.
+Submit `fn` once per element. `checkpoint=` accepts a
+[`Checkpoint`](checkpoint.md) for resumable fan-out — useful here, since
+CPU-heavy batches are the expensive kind to redo.
 
-### `group(tasks, iterable=None, *, group_id=None, opts=None, **overrides) -> SyncTaskGroup`
+### `group(tasks, iterable=None, *, group_id=None, opts=None, checkpoint=None, key=None, namespace=None, **overrides) -> SyncTaskGroup`
 
 Submit a batch and return a [`SyncTaskGroup`](groups.md#synctaskgroup).
 

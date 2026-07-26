@@ -73,6 +73,11 @@ class _BaseHandle:
         scheduled_for: float | None = None,
         metadata: Any = None,
     ) -> None:
+        """Record the task's identity (see the class attributes) and initialise waiter state.
+
+        Args:
+            cancel_fn: Queue callback that cancels this task by id.
+        """
         self.task_id = task_id
         self.name = name
         self.priority = priority
@@ -91,6 +96,7 @@ class _BaseHandle:
         self._callbacks: list[Callable[[Any], Any]] | None = None
 
     def __repr__(self) -> str:
+        """Return ``Handle('name', status=..., id=...)`` with a shortened task id."""
         return f"{type(self).__name__}({self.name!r}, status={self._status!r}, id={self.task_id[:8]})"
 
     @property
@@ -162,25 +168,33 @@ class _BaseHandle:
                 return
         self._invoke_callback(fn)
 
-    # -- internal ---------------------------------------------------------
-
     def _invoke_callback(self, fn: Callable[[Any], Any]) -> None:
+        """Call ``fn(self)``, logging (never propagating) exceptions."""
         try:
             fn(self)
         except Exception:
             logger.exception("done callback raised for task %s", self.name)
 
     def _mark_running(self) -> None:
+        """Count a new attempt, switch to ``running``, and stamp the first start time."""
         self._attempts += 1
         self._status = "running"
         if self._started_at is None:
             self._started_at = time.perf_counter()
 
     def _mark_retrying(self) -> None:
+        """Switch to ``retrying`` while waiting between attempts."""
         self._status = "retrying"
 
     def _mark_finished(self, result: TaskResult) -> bool:
-        """Set the final result once; wake waiters and fire callbacks."""
+        """Set the final result once; wake waiters and fire callbacks.
+
+        Args:
+            result: The outcome to publish.
+
+        Returns:
+            ``True`` if this call set the result, ``False`` if it was already set.
+        """
         with self._lock:
             if self._result is not None:
                 return False
@@ -194,11 +208,11 @@ class _BaseHandle:
                 self._invoke_callback(cb)
         return True
 
-    def _finish_locked(self) -> None:  # subclass hook (lock held)
-        pass
+    def _finish_locked(self) -> None:
+        """Subclass hook run while the handle lock is held."""
 
-    def _finish_unlocked(self) -> None:  # subclass hook (lock released)
-        pass
+    def _finish_unlocked(self) -> None:
+        """Subclass hook run after the handle lock is released."""
 
 
 class TaskHandle(_BaseHandle):
@@ -213,11 +227,13 @@ class TaskHandle(_BaseHandle):
     _pending_error = asyncio.InvalidStateError
 
     def __init__(self, **kwargs: Any) -> None:
+        """Initialise the handle with an empty waiter set (see :class:`_BaseHandle`)."""
         super().__init__(**kwargs)
         self._waiters: set[asyncio.Future[TaskResult]] = set()
         self._resolved: tuple[asyncio.Future[TaskResult], ...] = ()
 
     def __await__(self):
+        """Delegate to :meth:`wait`, so ``await handle`` yields the result."""
         return self.wait().__await__()
 
     async def wait(self) -> TaskResult:
@@ -239,10 +255,12 @@ class TaskHandle(_BaseHandle):
                 self._waiters.discard(waiter)
 
     def _finish_locked(self) -> None:
+        """Snapshot and clear the pending waiters (lock held)."""
         self._resolved = tuple(self._waiters)
         self._waiters.clear()
 
     def _finish_unlocked(self) -> None:
+        """Resolve the snapshotted waiters on their own loops, skipping dead ones."""
         result = self._result
         waiters, self._resolved = self._resolved, ()
         for w in waiters:
@@ -256,6 +274,7 @@ class TaskHandle(_BaseHandle):
 
 
 def _resolve(waiter: asyncio.Future[TaskResult], result: TaskResult) -> None:
+    """Set *result* on *waiter* unless it is already done (runs on the waiter's loop)."""
     if not waiter.done():
         waiter.set_result(result)
 
@@ -269,11 +288,15 @@ class SyncTaskHandle(_BaseHandle):
     _cancelled_error = CancelledError
 
     def __init__(self, **kwargs: Any) -> None:
+        """Initialise the handle with a condition over the shared lock (see :class:`_BaseHandle`)."""
         super().__init__(**kwargs)
         self._cond = threading.Condition(self._lock)
 
     def wait(self, timeout: float | None = None) -> TaskResult:
         """Block until the task finishes and return its :class:`~osiiso.TaskResult`.
+
+        Args:
+            timeout: Seconds to wait, or ``None`` to wait indefinitely.
 
         Raises:
             TimeoutError: If *timeout* seconds elapse first.
@@ -284,4 +307,5 @@ class SyncTaskHandle(_BaseHandle):
             return self._result  # type: ignore[return-value]
 
     def _finish_locked(self) -> None:
+        """Wake every thread blocked in :meth:`wait` (lock held)."""
         self._cond.notify_all()

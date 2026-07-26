@@ -30,6 +30,9 @@ from osiiso import (
     TaskResult,
     RunSummary,
 
+    # Resumable fan-out
+    Checkpoint,
+
     # Exceptions
     OsiisoError,
     ClosedError,
@@ -78,6 +81,12 @@ from osiiso import (
 |-------|-------------|
 | [TaskResult](taskresult.md) | Immutable record of a single task |
 | [RunSummary](runsummary.md) | Aggregate summary of a queue run |
+
+### Resumable Fan-out
+
+| Class | Description |
+|-------|-------------|
+| [Checkpoint](checkpoint.md) | Completion tracking keyed by input, so a killed run resumes |
 
 ### Exceptions
 

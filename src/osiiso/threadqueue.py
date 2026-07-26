@@ -72,6 +72,7 @@ class ThreadQueue(_SyncQueue):
         on_complete: Callable[[TaskResult], Any] | None = None,
         on_retry: Callable[[SyncTaskHandle, BaseException], Any] | None = None,
     ) -> None:
+        """Configure the queue; see the class docstring for what each argument means."""
         super().__init__(
             workers=workers,
             size=size,
@@ -90,12 +91,30 @@ class ThreadQueue(_SyncQueue):
         )
 
     def _validate_fn(self, fn: Any) -> None:
+        """Reject async work — thread tasks must be plain sync callables.
+
+        Raises:
+            TypeError: If *fn* is an awaitable or a coroutine function.
+        """
         if isawaitable(fn):
             raise TypeError("thread tasks must be callable, not awaitable — use AsyncQueue for async work")
         if iscoroutinefunction(fn):
             raise TypeError("thread tasks must be sync callables, not coroutine functions — use AsyncQueue for async work")
 
     def _execute(self, t: _Task, ctl: _Ctl, wctx: Any) -> Any:
+        """Run one attempt on a sidecar thread and wait on it, staying responsive to timeout and cancellation.
+
+        An abandoned sidecar keeps running in the background; its outcome is discarded.
+
+        Returns:
+            The task's return value.
+
+        Raises:
+            _Cancelled: If cancellation was requested.
+            TimeoutError: If ``opts.timeout`` elapsed.
+            RuntimeError: If the sidecar thread died without producing an outcome.
+            Exception: Whatever the task itself raised.
+        """
         wake = threading.Event()
         ctl.wake = wake
         if ctl.cancel_ev.is_set():
@@ -103,6 +122,7 @@ class ThreadQueue(_SyncQueue):
         box: list[tuple[str, Any]] = []
 
         def sidecar() -> None:
+            """Run the task, box its value or exception, then wake the worker."""
             try:
                 box.append(("v", t.fn(*t.args)))
             except BaseException as exc:

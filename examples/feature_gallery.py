@@ -32,6 +32,17 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+# Flipped to False below to simulate an outage clearing between two runs.
+OUTAGE = {"active": True}
+
+
+def double(n: int) -> int:
+    """Doubles *n*, failing on multiples of 3 while the outage is active."""
+    if OUTAGE["active"] and n % 3 == 0:
+        raise RuntimeError(f"upstream is down for {n}")
+    return n * 2
+
+
 def fail_once_factory() -> Callable[[], str]:
     attempts = {"count": 0}
 
@@ -101,10 +112,32 @@ def process_queue_gallery() -> None:
     summary.display()
 
 
+def checkpoint_gallery() -> None:
+    print("\nCheckpoint (resumable fan-out)")
+    inputs = [1, 2, 3, 4, 5, 6]
+
+    # ":memory:" keeps the demo self-contained; pass a file path to survive a restart.
+    with osiiso.Checkpoint() as cp:
+        with osiiso.ThreadQueue(workers=3) as q:
+            first = q.group(double, inputs, checkpoint=cp)
+            q.run()
+        print("First pass  :", [f"{h.name}={h.status}" for h in first])
+        print("Recorded    :", cp.count("double"), "of", len(inputs))
+
+        # Only successes were recorded, so the failures retry — and now they work.
+        OUTAGE["active"] = False
+        with osiiso.ThreadQueue(workers=3) as q:
+            second = q.group(double, inputs, checkpoint=cp)
+            summary = q.run(strict=True)
+        print("Second pass :", second.values())
+        print(f"Re-ran {summary.total_submitted} of {len(inputs)}; the rest were restored from the checkpoint")
+
+
 async def main() -> None:
     await async_queue_gallery()
     thread_queue_gallery()
     process_queue_gallery()
+    checkpoint_gallery()
 
 
 if __name__ == "__main__":

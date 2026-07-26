@@ -43,6 +43,7 @@ It is dependency-free at runtime, typed with `py.typed`, and built around a pred
 - A persistent process pool — subprocesses are reused across tasks, with crash detection and automatic respawn.
 - Graceful shutdown that drains outstanding work, with `must_complete` protection.
 - Batch workflows with `submit()`, `map()`, and `group()`.
+- Resumable fan-out via `Checkpoint` — a killed run picks up where it left off.
 - Awaitable async handles and blocking sync handles, with `add_done_callback()`.
 - Completion-order iteration via `as_completed()` (async) and `iter_completed()` (sync).
 - One-shot helpers: `amap()`, `tmap()`, and `pmap()` return ordered values.
@@ -170,6 +171,29 @@ pages = await osiiso.amap(fetch, urls, workers=8, retries=2)   # AsyncQueue
 sizes = osiiso.tmap(stat_file, paths, workers=8)               # ThreadQueue
 scores = osiiso.pmap(rank, datasets, workers=4)                # ProcessQueue
 ```
+
+### Resumable runs
+
+Long fan-outs fail partway.  Pass a `Checkpoint` and the inputs that already
+succeeded are not submitted again — their stored values are handed straight
+back, so results still line up 1:1 with the input:
+
+```python
+from osiiso import Checkpoint, ThreadQueue
+
+with Checkpoint("scrape.sqlite") as cp, ThreadQueue(workers=8, rate=5) as q:
+    grp = q.group(fetch, urls, checkpoint=cp, retries=3)
+    q.run()
+
+pages = grp.values()
+```
+
+Kill it at 30k of 50k URLs and run it again: only the missing 20k are fetched.
+Only successes are recorded, so failed and cancelled tasks retry next run.
+
+This is completion tracking keyed by input, **not** a durable task queue — the
+callable is never persisted, and nothing recovers work that was queued but
+never started.  See [Resumable Runs](docs/guides/resumable-runs.md).
 
 ### Rate limiting
 

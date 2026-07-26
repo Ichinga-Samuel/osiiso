@@ -113,10 +113,13 @@ class RunSummary:
         return tuple(r for r in self.results if r.status == "cancelled")
 
     def raise_for_errors(self, *, include_cancelled: bool = False) -> None:
-        """Raise :class:`~osiiso.ExecutionError` if any task failed.
+        """Raise if any task failed.
 
         Args:
             include_cancelled: Also raise when tasks were cancelled.
+
+        Raises:
+            ~osiiso.ExecutionError: Carrying the offending results.
         """
         from .exceptions import ExecutionError
 
@@ -152,7 +155,16 @@ class RunSummary:
 
     @classmethod
     def from_results(cls, results: list[TaskResult] | tuple[TaskResult, ...], *, run_start: float, timed_out: bool) -> RunSummary:
-        """Build a summary from collected results (internal factory)."""
+        """Build a summary from collected results (internal factory).
+
+        Args:
+            results: The results covered by this summary, in submission order.
+            run_start: Monotonic timestamp the run began at.
+            timed_out: Whether the run was cut short by a timeout.
+
+        Returns:
+            The populated :class:`RunSummary`.
+        """
         items = tuple(results)
         counts = Counter(r.status for r in items)
         return cls(
@@ -166,10 +178,20 @@ class RunSummary:
         )
 
 
-def make_result(
-    handle: Any, status: TaskStatus, *, value: Any = None, exception: BaseException | None = None, message: str = ""
-) -> TaskResult:
-    """Build a :class:`TaskResult` from a handle's current state (internal helper)."""
+def make_result(handle: Any, status: TaskStatus, *, value: Any = None, exception: BaseException | None = None,
+                message: str = "") -> TaskResult:
+    """Build a :class:`TaskResult` from a handle's current state (internal helper).
+
+    Args:
+        handle: The handle whose identity and timings are copied.
+        status: Final status of the task.
+        value: Return value, for succeeded tasks.
+        exception: Raised exception, for failed tasks.
+        message: Short human-readable description of the outcome.
+
+    Returns:
+        The immutable result record.
+    """
     finished_at = time.perf_counter()
     started_at = handle._started_at
     return TaskResult(

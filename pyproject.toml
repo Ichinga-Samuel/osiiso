@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "osiiso"
-version = "1.0.1"
+version = "1.1.1"
 description = "Structured concurrency and parallelism for asyncio, threading, and multiprocessing using queues."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -83,7 +83,7 @@ show_missing = true
 skip_covered = true
 
 [tool.ruff]
-line-length = 135
+line-length = 140
 target-version = "py313"
 
 [tool.ruff.lint]
