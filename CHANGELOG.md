@@ -12,7 +12,9 @@ This project follows semantic versioning where practical:
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-07-26
+---
+
+## [1.1.0] — 2026-07-26
 
 ### Added
 
@@ -24,8 +26,6 @@ This project follows semantic versioning where practical:
 - Community documentation for contributing, security reporting, support, and project conduct.
 - GitHub issue templates and pull request template.
 
----
-
 ### Changed
 
 - Completed the Google-style docstrings across the package — `Args`, `Returns`, and `Raises` sections are now filled in on public methods, module-level helpers, and dunder methods. No behaviour changes.
@@ -34,13 +34,22 @@ This project follows semantic versioning where practical:
 
 - Backward compatible with 1.0.x. `checkpoint`, `key`, and `namespace` are keyword-only and default to `None`; the code paths taken without them are unchanged. In 1.0.x those names raised `TypeError: Unknown task option(s): ...`, so no working call can break. `sqlite3` is imported lazily inside `Checkpoint`, so `import osiiso` still succeeds without it.
 
-## [1.0.1] - 2026-07-13
+---
+
+## [1.0.1] — 2026-07-13
 
 Released to PyPI but not previously recorded here.
+
+### Added
+
+- **`SharedQueue`** — an `AsyncQueue` subclass with a thread-safe submission plane. Execution still happens on the single event loop the queue is bound to; only submission changes. `submit()`, `map()`, and `group()` calls from foreign threads are marshaled onto the loop with `call_soon_threadsafe` and block for one round-trip, so they return a fully registered `TaskHandle` and raise `ClosedError` / `QueueFullError` at the call site exactly as they do on the loop thread. Intended for a long-lived queue serving one event loop while plain threads produce work.
+- `SharedQueue` is exported from the package root, with a reference page in the docs.
 
 ### Fixed
 
 - Repaired mojibake in four error messages, where a UTF-8 em dash had been written as `â€”` (`ThreadQueue._validate_fn`, `AsyncQueue.reset`, `AsyncQueue._enqueue`, and the sync queue's `reset`).
+
+---
 
 ## [1.0.0] — 2026-07-11
 

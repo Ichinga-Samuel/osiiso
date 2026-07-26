@@ -24,8 +24,12 @@ hide:
 | Backend | Class | Best for |
 |---------|-------|----------|
 | **Asyncio** | `AsyncQueue` | HTTP clients, async databases, websockets, API fan-out |
+| **Asyncio, shared loop** | `SharedQueue` | One event loop served by producers on other threads |
 | **Threads** | `ThreadQueue` | Blocking I/O, synchronous SDKs, filesystem work, SQLite |
 | **Processes** | `ProcessQueue` | CPU-heavy computation, parsing, scoring, analytics |
+
+`SharedQueue` is an `AsyncQueue` with a thread-safe submission plane — work still
+executes on its single event loop.
 
 All three queues share the same shape: **submit tasks → configure options → run → inspect results**.
 
@@ -55,6 +59,7 @@ print(osiiso.run(main()))
 ## Key Features
 
 - :material-swap-horizontal: **Unified API** — Same interface for async, threaded, and process queues
+- :material-source-branch: **Cross-thread submission** — `SharedQueue` accepts work from any thread onto one loop
 - :material-sort-ascending: **Priority scheduling** — Lower priority numbers execute first
 - :material-refresh: **Retries with backoff** — Configurable retry count, delay, and exponential backoff
 - :material-timer-outline: **Timeouts** — Per-task and queue-level time limits

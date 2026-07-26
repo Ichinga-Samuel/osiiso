@@ -10,6 +10,7 @@ learn one, switching between execution models requires minimal changes.
 | Workload | Queue | When to Use |
 |----------|-------|-------------|
 | Coroutine-based I/O | **`AsyncQueue`** | HTTP clients, async databases, websockets, API fan-out |
+| Coroutine I/O fed from threads | **`SharedQueue`** | One event loop serving producers on other threads |
 | Blocking synchronous work | **`ThreadQueue`** | File operations, blocking SDKs, SQLite writes, sync integrations |
 | CPU-heavy computation | **`ProcessQueue`** | Ranking, parsing, scoring, transformations, analytics |
 
@@ -44,6 +45,45 @@ Use `osiiso.run()` as your top-level entry point:
 ```python
 result = osiiso.run(main(), use_uvloop=False)
 ```
+
+---
+
+## SharedQueue
+
+An `AsyncQueue` whose **submission plane is thread-safe**. Work still executes on
+the one event loop the queue is bound to — only `submit()`, `map()`, and
+`group()` change, marshaling onto that loop from whatever thread calls them.
+
+Reach for it when a long-lived loop should serve producers that are plain
+threads:
+
+```python
+q = osiiso.SharedQueue(workers=4, mode="infinite")
+
+def producer():                      # runs on any thread
+    for item in source:
+        q.submit(work, item, retries=2)
+
+async def main():
+    async with q:                    # binds the shared loop
+        threading.Thread(target=producer).start()
+        await q.run()                # serve until shutdown()
+```
+
+**Key behaviors:**
+
+- A cross-thread submission blocks the caller for one loop round-trip and returns a fully registered handle
+- `ClosedError` and `QueueFullError` raise at the call site, exactly as on the loop thread
+- Producer threads observe completion with `handle.add_done_callback()` or `handle.done()`
+- `run()`, `join()`, `shutdown()`, and `reset()` still belong to the owning loop
+
+!!! warning "Hand it to producers only after it has started"
+    Thread-safe submission holds once the queue has started and its loop is
+    running. Before `start()` / `__aenter__`, submission is single-threaded just
+    like `AsyncQueue`. Avoid submitting from another *event loop's* thread — the
+    round-trip would block that loop briefly.
+
+See the [`SharedQueue` reference](../reference/sharedqueue.md) for full details.
 
 ---
 
